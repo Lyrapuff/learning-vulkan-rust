@@ -1,13 +1,17 @@
 use std::sync::Arc;
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
 
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents};
 use vulkano::device::physical::PhysicalDevice;
-use vulkano::device::{Device, DeviceExtensions};
+use vulkano::device::{Device, DeviceExtensions, Features};
 use vulkano::image::view::ImageView;
 use vulkano::image::{ImageAccess, SwapchainImage};
 use vulkano::instance::Instance;
-use vulkano::pipeline::graphics::viewport::Viewport;
-use vulkano::render_pass::{Framebuffer, RenderPass};
+use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
+use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
+use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::GraphicsPipeline;
+use vulkano::render_pass::{Framebuffer, RenderPass, Subpass};
 use vulkano::swapchain::{self, AcquireError, Swapchain, SwapchainCreationError};
 use vulkano::sync::{self, FlushError, GpuFuture};
 use vulkano::Version;
@@ -17,6 +21,13 @@ use winit::event::{Event, WindowEvent};
 
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
+
+#[derive(Default, Debug, Clone)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3]
+}
+vulkano::impl_vertex!(Vertex, position, color);
 
 fn main() {
     let instance = {
@@ -38,8 +49,8 @@ fn main() {
 
     let (device, mut queues) = Device::new(
         physical,
-        physical.supported_features(),
-        &device_ext,
+        &Features::none(),
+        &physical.required_extensions().union(&device_ext),
         [(queue_family, 0.5)].iter().cloned(),
     ).unwrap();
 
@@ -78,6 +89,58 @@ fn main() {
             depth_stencil: {}
         }
     ).unwrap();
+
+    mod vs {
+        vulkano_shaders::shader!{
+        ty: "vertex",
+        src: "
+#version 450
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 color;
+
+layout(location = 0) out vec3 out_color;
+
+void main() {
+    gl_Position = vec4(position, 1.0);
+    out_color = color;
+}"
+        }
+    }
+
+    mod fs {
+        vulkano_shaders::shader!{
+        ty: "fragment",
+        src: "
+#version 450
+layout(location = 0) in vec3 in_color;
+
+layout(location = 0) out vec4 f_color;
+
+void main() {
+    f_color = vec4(in_color, 1.0);
+}
+"
+        }
+    }
+
+    let vs = vs::load(device.clone()).unwrap();
+    let fs = fs::load(device.clone()).unwrap();
+
+    let pipeline = GraphicsPipeline::start()
+        .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
+        .vertex_shader(vs.entry_point("main").unwrap(), ())
+        .input_assembly_state(InputAssemblyState::new())
+        .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+        .fragment_shader(fs.entry_point("main").unwrap(), ())
+        .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+        .build(device.clone())
+        .unwrap();
+
+    let vertex_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, [
+        Vertex { position: [-0.5, 0.5, 0.0], color: [1.0, 0.0, 0.0] },
+        Vertex { position: [0.5, 0.5, 0.0], color: [0.0, 1.0, 0.0] },
+        Vertex { position: [0.0, -0.5, 0.0], color: [0.0, 0.0, 1.0] }
+    ].iter().cloned()).unwrap();
 
     let mut viewport = Viewport {
         origin: [0.0, 0.0],
@@ -139,6 +202,11 @@ fn main() {
 
                 cmd_buffer_builder
                     .begin_render_pass(framebuffers[image_num].clone(), SubpassContents::Inline, clear_value)
+                    .unwrap()
+                    .set_viewport(0, [viewport.clone()])
+                    .bind_pipeline_graphics(pipeline.clone())
+                    .bind_vertex_buffers(0, vertex_buffer.clone())
+                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
                     .unwrap()
                     .end_render_pass()
                     .unwrap();
