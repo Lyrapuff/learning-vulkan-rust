@@ -10,3 +10,5 @@ vulkano-win = "0.27.1"
 vulkano-shaders = "0.27.1"
 
 winit = "0.25.0"
+
+nalgebra-glm = "0.5.0"
