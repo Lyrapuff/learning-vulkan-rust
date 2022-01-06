@@ -5,10 +5,5 @@ edition = "2021"
 authors = ["Lyrapuff <lyrapuff@gmail.com>"]
 
 [dependencies]
-vulkano = "0.27.1"
-vulkano-win = "0.27.1"
-vulkano-shaders = "0.27.1"
-
-winit = "0.25.0"
-
-nalgebra-glm = "0.5.0"
+ash = { version = "0.35.0", default-features = false, features = ["linked", "debug"] }
+winit = "0.26.1"
