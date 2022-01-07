@@ -4,7 +4,7 @@ use std::mem::ManuallyDrop;
 
 use ash::{Device, Entry, Instance, vk};
 use ash::extensions::khr::Swapchain;
-use ash::vk::{Extent2D, Framebuffer, Handle, Image, ImageView, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
+use ash::vk::{CommandBuffer, CommandPool, Extent2D, Framebuffer, Handle, Image, ImageView, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
 
 use winit::event_loop::EventLoop;
 use winit::platform::unix::WindowExtUnix;
@@ -39,7 +39,9 @@ struct VulkanEngine {
     device: Device,
     swapchain: EngineSwapchain,
     render_pass: RenderPass,
-    pipeline: EnginePipeline
+    pipeline: EnginePipeline,
+    pools: Pools,
+    graphics_command_buffers: Vec<CommandBuffer>
 }
 
 impl VulkanEngine {
@@ -74,7 +76,10 @@ impl VulkanEngine {
 
         let pipeline = EnginePipeline::init(&device, &swapchain, render_pass)?;
 
-        Ok(VulkanEngine {
+        let pools = Pools::init(&device, &queue_families)?;
+        let command_buffers = pools.create_command_buffers(&device, swapchain.framebuffers.len())?;
+
+        let engine = VulkanEngine {
             window,
             entry,
             instance,
@@ -87,8 +92,14 @@ impl VulkanEngine {
             device,
             swapchain,
             render_pass,
-            pipeline
-        })
+            pipeline,
+            pools,
+            graphics_command_buffers: command_buffers,
+        };
+
+        engine.fill_command_buffers();
+
+        Ok(engine)
     }
 
     fn init_instance(
@@ -257,11 +268,60 @@ impl VulkanEngine {
             device.create_render_pass(&render_pass_info, None)
         }
     }
+
+    fn fill_command_buffers(&self) {
+        for (i, &command_buffer) in self.graphics_command_buffers.iter().enumerate() {
+            let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
+
+            unsafe {
+                self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info);
+            }
+
+            let clear_values = [vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                }
+            }];
+
+            let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
+                .render_pass(self.render_pass)
+                .framebuffer(self.swapchain.framebuffers[i])
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D {
+                        x: 0,
+                        y: 0,
+                    },
+                    extent: self.swapchain.extent
+                })
+                .clear_values(&clear_values);
+
+            unsafe {
+                self.device.cmd_begin_render_pass(
+                    command_buffer,
+                    &render_pass_begin_info,
+                    vk::SubpassContents::INLINE
+                );
+
+                self.device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline.pipeline
+                );
+
+                self.device.cmd_draw(command_buffer, 1, 1, 0, 0);
+
+                self.device.cmd_end_render_pass(command_buffer);
+
+                self.device.end_command_buffer(command_buffer);
+            }
+        }
+    }
 }
 
 impl Drop for VulkanEngine{
     fn drop(&mut self) {
         unsafe {
+            self.device.device_wait_idle().expect("Failed to wait?");
             self.pipeline.cleanup(&self.device);
             self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain.cleanup(&self.device);
@@ -450,6 +510,11 @@ struct EngineSwapchain {
     framebuffers: Vec<Framebuffer>,
     surface_format: vk::SurfaceFormatKHR,
     extent: Extent2D,
+    image_available: Vec<vk::Semaphore>,
+    rendering_finished: Vec<vk::Semaphore>,
+    may_begin_drawing: Vec<vk::Fence>,
+    amount_of_images: u32,
+    current_image: usize,
 }
 
 impl EngineSwapchain {
@@ -490,6 +555,8 @@ impl EngineSwapchain {
 
         let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain)? };
 
+        let amount_of_images = swapchain_images.len() as u32;
+
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
         for image in &swapchain_images {
@@ -513,6 +580,33 @@ impl EngineSwapchain {
             swapchain_image_views.push(image_view);
         }
 
+        let mut image_available = vec![];
+        let mut rendering_finished = vec![];
+        let mut may_begin_drawing = vec![];
+
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        let fence_info = vk::FenceCreateInfo::builder()
+            .flags(vk::FenceCreateFlags::SIGNALED);
+
+        for _ in 0..amount_of_images {
+            let semaphore_available = unsafe {
+                device.create_semaphore(&semaphore_info, None)?
+            };
+
+            let semaphore_finished = unsafe {
+                device.create_semaphore(&semaphore_info, None)?
+            };
+
+            image_available.push(semaphore_available);
+            rendering_finished.push(semaphore_finished);
+
+            let fence = unsafe {
+                device.create_fence(&fence_info, None)?
+            };
+
+            may_begin_drawing.push(fence);
+        }
+
         Ok(EngineSwapchain {
             loader: swapchain_loader,
             swapchain,
@@ -520,7 +614,12 @@ impl EngineSwapchain {
             image_views: swapchain_image_views,
             framebuffers: vec![],
             surface_format: format,
-            extent
+            extent,
+            amount_of_images,
+            current_image: 0,
+            image_available,
+            rendering_finished,
+            may_begin_drawing
         })
     }
 
@@ -549,7 +648,27 @@ impl EngineSwapchain {
         Ok(())
     }
 
+    fn calculate_current_image(&mut self) {
+        self.current_image = (self.current_image + 1) % self.amount_of_images as usize;
+    }
+
     unsafe fn cleanup(&mut self, device: &Device) {
+        for fence in &self.may_begin_drawing {
+            device.destroy_fence(*fence, None);
+        }
+
+        for semaphore in &self.image_available {
+            device.destroy_semaphore(*semaphore, None);
+        }
+
+        for semaphore in &self.rendering_finished {
+            device.destroy_semaphore(*semaphore, None);
+        }
+
+        for fb in &self.framebuffers {
+            device.destroy_framebuffer(*fb, None);
+        }
+
         for iv in &self.image_views {
             device.destroy_image_view(*iv, None);
         }
@@ -702,11 +821,63 @@ impl EnginePipeline {
     }
 }
 
+struct Pools {
+    command_pool_graphics: CommandPool,
+    command_pool_transfer: CommandPool,
+}
+
+impl Pools {
+    fn init (
+        device: &Device,
+        queue_families: &QueueFamilies,
+    ) -> Result<Pools, vk::Result> {
+        let graphics_command_pool_info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_families.graphics_index.unwrap())
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool_graphics = unsafe {
+            device.create_command_pool(&graphics_command_pool_info, None)
+        }?;
+
+        let transfer_command_pool_info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_families.transfer_index.unwrap())
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool_transfer = unsafe {
+            device.create_command_pool(&transfer_command_pool_info, None)
+        }?;
+
+        Ok(Pools {
+            command_pool_graphics,
+            command_pool_transfer,
+        })
+    }
+
+    fn create_command_buffers(
+        &self,
+        device: &Device,
+        amount: usize
+    ) -> Result<Vec<CommandBuffer>, vk::Result> {
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(self.command_pool_graphics)
+            .command_buffer_count(amount as u32);
+
+        unsafe {
+            device.allocate_command_buffers(&command_buffer_allocate_info)
+        }
+    }
+
+    fn cleanup(&self, device: &Device) {
+        unsafe {
+            device.destroy_command_pool(self.command_pool_graphics, None);
+            device.destroy_command_pool(self.command_pool_transfer, None);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop)?;
 
-    let engine = VulkanEngine::init(window)?;
+    let mut engine = VulkanEngine::init(window)?;
 
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -720,7 +891,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine.window.request_redraw();
             }
             Event::RedrawRequested(_) => {
-                //drawing
+                engine.swapchain.calculate_current_image();
+
+                let (image_index, _) = unsafe {
+                    engine.swapchain.loader.acquire_next_image(
+                        engine.swapchain.swapchain,
+                        u64::MAX,
+                        engine.swapchain.image_available[engine.swapchain.current_image],
+                        vk::Fence::null()
+                    ).expect("Failed to acquire next image")
+                };
+
+                unsafe {
+                    engine.device.wait_for_fences(
+                        &[engine.swapchain.may_begin_drawing[engine.swapchain.current_image]],
+                        true,
+                        u64::MAX
+                    ).expect("Fence waiting");
+
+                    engine.device.reset_fences(
+                        &[engine.swapchain.may_begin_drawing[engine.swapchain.current_image]]
+                    ).expect("Resetting fences");
+
+                    let semaphores_available = [engine.swapchain.image_available[engine.swapchain.current_image]];
+                    let waiting_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                    let semaphores_finished = [engine.swapchain.rendering_finished[engine.swapchain.current_image]];
+                    let command_buffers = [engine.graphics_command_buffers[image_index as usize]];
+
+                    let submit_info = [
+                        vk::SubmitInfo::builder()
+                            .wait_semaphores(&semaphores_available)
+                            .wait_dst_stage_mask(&waiting_stages)
+                            .command_buffers(&command_buffers)
+                            .signal_semaphores(&semaphores_finished)
+                            .build()
+                    ];
+
+                    unsafe {
+                        engine.device.queue_submit(
+                            engine.queues.graphics,
+                            &submit_info,
+                            engine.swapchain.may_begin_drawing[engine.swapchain.current_image]
+                        ).expect("Queue submission");
+                    }
+
+                    let swapchains = [engine.swapchain.swapchain];
+                    let indices = [image_index];
+                    let present_info = vk::PresentInfoKHR::builder()
+                        .wait_semaphores(&semaphores_finished)
+                        .swapchains(&swapchains)
+                        .image_indices(&indices);
+
+                    unsafe {
+                        engine.swapchain.loader.queue_present(
+                            engine.queues.graphics,
+                            &present_info
+                        ).expect("Queue presentation");
+                    }
+                }
             }
             _ => {}
         }
