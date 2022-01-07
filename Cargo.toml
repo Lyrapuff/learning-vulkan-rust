@@ -6,4 +6,5 @@ authors = ["Lyrapuff <lyrapuff@gmail.com>"]
 
 [dependencies]
 ash = { version = "0.35.0", default-features = false, features = ["linked", "debug"] }
+vk-shader-macros = "0.2.7"
 winit = "0.26.1"

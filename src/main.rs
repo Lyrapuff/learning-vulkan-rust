@@ -1,9 +1,10 @@
 use std::error::Error;
 use std::ffi::{CStr, CString};
+use std::mem::ManuallyDrop;
 
 use ash::{Device, Entry, Instance, vk};
 use ash::extensions::khr::Swapchain;
-use ash::vk::{Handle, PhysicalDevice, Queue};
+use ash::vk::{Extent2D, Framebuffer, Handle, Image, ImageView, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
 
 use winit::event_loop::EventLoop;
 use winit::platform::unix::WindowExtUnix;
@@ -29,14 +30,16 @@ struct VulkanEngine {
     window: Window,
     entry: Entry,
     instance: Instance,
-    debug: std::mem::ManuallyDrop<DebugSystem>,
-    surfaces: std::mem::ManuallyDrop<SurfaceSystem>,
-    physical_device: vk::PhysicalDevice,
-    physical_device_properties: vk::PhysicalDeviceProperties,
+    debug: ManuallyDrop<EngineDebug>,
+    surfaces: ManuallyDrop<EngineSurface>,
+    physical_device: PhysicalDevice,
+    physical_device_properties: PhysicalDeviceProperties,
     queue_families: QueueFamilies,
     queues: Queues,
     device: Device,
-    swapchain: SwapchainSystem,
+    swapchain: EngineSwapchain,
+    render_pass: RenderPass,
+    pipeline: EnginePipeline
 }
 
 impl VulkanEngine {
@@ -46,18 +49,30 @@ impl VulkanEngine {
         let layer_names = vec!["VK_LAYER_KHRONOS_validation"];
 
         let instance = Self::init_instance(&entry, &layer_names)?;
-        let debug = DebugSystem::init(&entry, &instance)?;
-        let surfaces = SurfaceSystem::init(&window, &entry, &instance)?;
+
+        let debug = EngineDebug::init(&entry, &instance)?;
+
+        let surfaces = EngineSurface::init(&window, &entry, &instance)?;
+
         let (physical_device, physical_device_properties) = Self::init_physical_device(&instance)?;
+
         let queue_families = QueueFamilies::init(&instance, physical_device, &surfaces)?;
+
         let (device, queues) = Self::init_device_queues(&instance, physical_device, &queue_families, &layer_names)?;
-        let swapchain = SwapchainSystem::init(
+
+        let mut swapchain = EngineSwapchain::init(
             &instance,
             physical_device,
             &device,
             &surfaces,
             &queue_families,
         )?;
+
+        let render_pass = Self::init_render_pass(&device, physical_device, &surfaces)?;
+
+        swapchain.create_framebuffers(&device, render_pass)?;
+
+        let pipeline = EnginePipeline::init(&device, &swapchain, render_pass)?;
 
         Ok(VulkanEngine {
             window,
@@ -70,11 +85,16 @@ impl VulkanEngine {
             queue_families,
             queues,
             device,
-            swapchain
+            swapchain,
+            render_pass,
+            pipeline
         })
     }
 
-    fn init_instance(entry: &Entry, layer_names: &[&str]) -> Result<Instance, vk::Result> {
+    fn init_instance(
+        entry: &Entry,
+        layer_names: &[&str],
+    ) -> Result<Instance, vk::Result> {
         let app_name = CString::new("Vulkan Engine").unwrap();
         let engine_name = CString::new("Vulkan Engine").unwrap();
 
@@ -109,7 +129,9 @@ impl VulkanEngine {
         }
     }
 
-    fn init_physical_device(instance: &Instance) -> Result<(vk::PhysicalDevice, vk::PhysicalDeviceProperties), vk::Result> {
+    fn init_physical_device(
+        instance: &Instance,
+    ) -> Result<(vk::PhysicalDevice, vk::PhysicalDeviceProperties), vk::Result> {
         let phys_devs = unsafe {
             instance.enumerate_physical_devices()?
         };
@@ -123,7 +145,12 @@ impl VulkanEngine {
         Ok((p, properties))
     }
 
-    fn init_device_queues(instance: &Instance, physical_device: PhysicalDevice, queue_families: &QueueFamilies, layer_names: &[&str]) -> Result<(Device, Queues), vk::Result> {
+    fn init_device_queues(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
+        queue_families: &QueueFamilies,
+        layer_names: &[&str],
+    ) -> Result<(Device, Queues), vk::Result> {
         let layer_names: Vec<CString> = layer_names
             .iter()
             .map(|&ln| CString::new(ln).unwrap())
@@ -171,27 +198,88 @@ impl VulkanEngine {
             transfer: transfer_queue
         }))
     }
+
+    fn init_render_pass(
+        device: &Device,
+        physical_device: PhysicalDevice,
+        surfaces: &EngineSurface
+    ) -> Result<RenderPass, vk::Result> {
+        let attachments = [
+            vk::AttachmentDescription::builder()
+                .format(
+                    surfaces.formats(physical_device)?
+                        .first()
+                        .unwrap()
+                        .format
+                )
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .build()
+        ];
+
+        let color_attachment_refs = [
+            vk::AttachmentReference {
+                attachment: 0,
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            }
+        ];
+
+        let subpasses = [
+            vk::SubpassDescription::builder()
+                .color_attachments(&color_attachment_refs)
+                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                .build()
+        ];
+
+        let subpass_dependencies = [
+            vk::SubpassDependency::builder()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_subpass(0)
+                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                )
+                .build()
+        ];
+
+        let render_pass_info = vk::RenderPassCreateInfo::builder()
+            .attachments(&attachments)
+            .subpasses(&subpasses)
+            .dependencies(&subpass_dependencies);
+
+        unsafe {
+            device.create_render_pass(&render_pass_info, None)
+        }
+    }
 }
 
 impl Drop for VulkanEngine{
     fn drop(&mut self) {
         unsafe {
+            self.pipeline.cleanup(&self.device);
+            self.device.destroy_render_pass(self.render_pass, None);
             self.swapchain.cleanup(&self.device);
             self.device.destroy_device(None);
-            std::mem::ManuallyDrop::drop(&mut self.surfaces);
-            std::mem::ManuallyDrop::drop(&mut self.debug);
+            ManuallyDrop::drop(&mut self.surfaces);
+            ManuallyDrop::drop(&mut self.debug);
             self.instance.destroy_instance(None);
         }
     }
 }
 
-struct DebugSystem {
+struct EngineDebug {
     loader: ash::extensions::ext::DebugUtils,
     messenger: vk::DebugUtilsMessengerEXT,
 }
 
-impl DebugSystem {
-    fn init(entry: &Entry, instance: &Instance) -> Result<DebugSystem, vk::Result> {
+impl EngineDebug {
+    fn init(entry: &Entry, instance: &Instance) -> Result<EngineDebug, vk::Result> {
         let mut debug_create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
             .message_severity(
                 vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
@@ -212,14 +300,14 @@ impl DebugSystem {
             loader.create_debug_utils_messenger(&debug_create_info, None)?
         };
 
-        Ok(DebugSystem {
+        Ok(EngineDebug {
             loader,
             messenger
         })
     }
 }
 
-impl Drop for DebugSystem {
+impl Drop for EngineDebug {
     fn drop(&mut self) {
         unsafe {
             self.loader.destroy_debug_utils_messenger(self.messenger, None)
@@ -227,19 +315,19 @@ impl Drop for DebugSystem {
     }
 }
 
-// os specific (in my case linux)
-struct SurfaceSystem {
+// os specific (in my case linux), will use ash_window crate later, probably, if anyone will care
+struct EngineSurface {
     xlib_surface_loader: ash::extensions::khr::XlibSurface,
     surface: vk::SurfaceKHR,
     surface_loader: ash::extensions::khr::Surface,
 }
 
-impl SurfaceSystem {
+impl EngineSurface {
     fn init(
         window: &winit::window::Window,
         entry: &ash::Entry,
         instance: &ash::Instance,
-    ) -> Result<SurfaceSystem, vk::Result> {
+    ) -> Result<EngineSurface, vk::Result> {
         let x11_display = window.xlib_display().unwrap();
         let x11_window = window.xlib_window().unwrap();
         let x11_create_info = vk::XlibSurfaceCreateInfoKHR::builder()
@@ -250,7 +338,7 @@ impl SurfaceSystem {
         let surface = unsafe { xlib_surface_loader.create_xlib_surface(&x11_create_info, None)? };
         let surface_loader = ash::extensions::khr::Surface::new(&entry, &instance);
 
-        Ok(SurfaceSystem {
+        Ok(EngineSurface {
             xlib_surface_loader,
             surface,
             surface_loader,
@@ -299,7 +387,7 @@ impl SurfaceSystem {
     }
 }
 
-impl Drop for SurfaceSystem {
+impl Drop for EngineSurface {
     fn drop(&mut self) {
         unsafe {
             self.surface_loader.destroy_surface(self.surface, None);
@@ -316,7 +404,7 @@ impl QueueFamilies {
     fn init(
         instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
-        surfaces: &SurfaceSystem,
+        surfaces: &EngineSurface,
     ) -> Result<QueueFamilies, vk::Result> {
         let queue_family_properties = unsafe {
             instance.get_physical_device_queue_family_properties(physical_device)
@@ -354,26 +442,30 @@ struct Queues {
     transfer: Queue,
 }
 
-struct SwapchainSystem {
+struct EngineSwapchain {
     loader: ash::extensions::khr::Swapchain,
     swapchain: vk::SwapchainKHR,
-    images: Vec<vk::Image>,
-    image_views: Vec<vk::ImageView>,
+    images: Vec<Image>,
+    image_views: Vec<ImageView>,
+    framebuffers: Vec<Framebuffer>,
+    surface_format: vk::SurfaceFormatKHR,
+    extent: Extent2D,
 }
 
-impl SwapchainSystem {
+impl EngineSwapchain {
     fn init(
         instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
         device: &ash::Device,
-        surfaces: &SurfaceSystem,
+        surfaces: &EngineSurface,
         queue_families: &QueueFamilies,
-    ) -> Result<SwapchainSystem, vk::Result> {
+    ) -> Result<EngineSwapchain, vk::Result> {
         let surface_capabilities = surfaces.capabilities(physical_device)?;
         let surface_present_modes = surfaces.present_modes(physical_device)?;
         let surface_formats = surfaces.formats(physical_device)?;
 
-        let format = surface_formats.first().unwrap();
+        let format = surface_formats[0];
+        let extent = surface_capabilities.current_extent;
 
         let queue_families = [queue_families.graphics_index.unwrap()];
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
@@ -384,7 +476,7 @@ impl SwapchainSystem {
             )
             .image_format(format.format)
             .image_color_space(format.color_space)
-            .image_extent(surface_capabilities.current_extent)
+            .image_extent(extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -392,6 +484,7 @@ impl SwapchainSystem {
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO);
+
         let swapchain_loader = ash::extensions::khr::Swapchain::new(&instance, &device);
         let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };
 
@@ -416,15 +509,44 @@ impl SwapchainSystem {
             let image_view = unsafe {
                 device.create_image_view(&image_view_create_info, None)?
             };
+
             swapchain_image_views.push(image_view);
         }
 
-        Ok(SwapchainSystem {
+        Ok(EngineSwapchain {
             loader: swapchain_loader,
             swapchain,
             images: swapchain_images,
-            image_views: swapchain_image_views
+            image_views: swapchain_image_views,
+            framebuffers: vec![],
+            surface_format: format,
+            extent
         })
+    }
+
+    fn create_framebuffers(
+        &mut self,
+        device: &Device,
+        render_pass: RenderPass
+    ) -> Result<(), vk::Result> {
+        for image_view in &self.image_views {
+            let image_view = [*image_view];
+
+            let framebuffer_info = vk::FramebufferCreateInfo::builder()
+                .render_pass(render_pass)
+                .attachments(&image_view)
+                .width(self.extent.width)
+                .height(self.extent.height)
+                .layers(1);
+
+            let framebuffer = unsafe {
+                device.create_framebuffer(&framebuffer_info, None)?
+            };
+
+            self.framebuffers.push(framebuffer);
+        }
+
+        Ok(())
     }
 
     unsafe fn cleanup(&mut self, device: &Device) {
@@ -433,6 +555,150 @@ impl SwapchainSystem {
         }
 
         self.loader.destroy_swapchain(self.swapchain, None)
+    }
+}
+
+struct EnginePipeline {
+    pipeline: Pipeline,
+    layout: PipelineLayout,
+}
+
+impl EnginePipeline {
+    fn init(
+        device: &Device,
+        swapchain: &EngineSwapchain,
+        render_pass: RenderPass
+    ) -> Result<EnginePipeline, vk::Result> {
+        let vertex_shader_create_info = vk::ShaderModuleCreateInfo::builder()
+            .code(
+                vk_shader_macros::include_glsl!("./shaders/shader.vert")
+            );
+        let vertex_shader_module = unsafe {
+            device.create_shader_module(&vertex_shader_create_info, None)?
+        };
+
+        let fragment_shader_create_info = vk::ShaderModuleCreateInfo::builder()
+            .code(
+                vk_shader_macros::include_glsl!("./shaders/shader.frag")
+            );
+        let fragment_shader_module = unsafe {
+            device.create_shader_module(&fragment_shader_create_info, None)?
+        };
+
+        let entry_point = CString::new("main").unwrap();
+        let vertex_shader_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vertex_shader_module)
+            .name(&entry_point);
+        let fragment_shader_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(fragment_shader_module)
+            .name(&entry_point);
+        let shader_stages = vec![
+            vertex_shader_stage.build(),
+            fragment_shader_stage.build()
+        ];
+
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::builder();
+
+        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::POINT_LIST);
+
+        let viewports = [
+            Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: swapchain.extent.width as f32,
+                height: swapchain.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }
+        ];
+        let scissors = [
+            Rect2D {
+                offset: Offset2D {
+                    x: 0,
+                    y: 0,
+                },
+                extent: swapchain.extent
+            }
+        ];
+
+        let viewport_info = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        let rasterizer_info = vk::PipelineRasterizationStateCreateInfo::builder()
+            .line_width(1.0)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .polygon_mode(vk::PolygonMode::FILL);
+
+        let multisampler_info = vk::PipelineMultisampleStateCreateInfo::builder()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let colorblend_attachments = [
+            vk::PipelineColorBlendAttachmentState::builder()
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD)
+                .color_write_mask(
+                    vk::ColorComponentFlags::R
+                        | vk::ColorComponentFlags::G
+                        | vk::ColorComponentFlags::B
+                        | vk::ColorComponentFlags::A,
+                )
+                .build(),
+        ];
+
+        let colorblend_info = vk::PipelineColorBlendStateCreateInfo::builder()
+            .attachments(&colorblend_attachments);
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder();
+        let pipeline_layout = unsafe {
+            device.create_pipeline_layout(&pipeline_layout_info, None)?
+        };
+
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly_info)
+            .viewport_state(&viewport_info)
+            .rasterization_state(&rasterizer_info)
+            .multisample_state(&multisampler_info)
+            .color_blend_state(&colorblend_info)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let graphics_pipeline = unsafe {
+            device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                &[pipeline_info.build()],
+                None
+            ).expect("Failed to create graphics pipeline")
+        }[0];
+
+        unsafe {
+            device.destroy_shader_module(fragment_shader_module, None);
+            device.destroy_shader_module(vertex_shader_module, None);
+        }
+
+        Ok(EnginePipeline {
+            pipeline: graphics_pipeline,
+            layout: pipeline_layout,
+        })
+    }
+
+    fn cleanup(&self, device: &ash::Device) {
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline_layout(self.layout, None);
+        }
     }
 }
 
