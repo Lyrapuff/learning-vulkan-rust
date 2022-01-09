@@ -4,7 +4,8 @@ use std::mem::ManuallyDrop;
 
 use ash::{Device, Entry, Instance, vk};
 use ash::extensions::khr::Swapchain;
-use ash::vk::{CommandBuffer, CommandPool, Extent2D, Framebuffer, Handle, Image, ImageView, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
+use ash::vk::{Buffer, CommandBuffer, CommandPool, Extent2D, Framebuffer, Handle, Image, ImageView, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 
 use winit::event_loop::EventLoop;
 use winit::platform::unix::WindowExtUnix;
@@ -41,7 +42,9 @@ struct VulkanEngine {
     render_pass: RenderPass,
     pipeline: EnginePipeline,
     pools: Pools,
-    graphics_command_buffers: Vec<CommandBuffer>
+    graphics_command_buffers: Vec<CommandBuffer>,
+    allocator: gpu_allocator::vulkan::Allocator,
+    buffers: Vec<EngineBuffer>,
 }
 
 impl VulkanEngine {
@@ -79,6 +82,29 @@ impl VulkanEngine {
         let pools = Pools::init(&device, &queue_families)?;
         let command_buffers = pools.create_command_buffers(&device, swapchain.framebuffers.len())?;
 
+        // vertex buffer allocation
+        let mut allocator = gpu_allocator::vulkan::Allocator::new(
+            &AllocatorCreateDesc {
+                instance: instance.clone(),
+                device: device.clone(),
+                physical_device,
+                debug_settings: Default::default(),
+                buffer_device_address: false
+            }
+        ).unwrap();
+
+        let buffer = EngineBuffer::new(
+            &mut allocator,
+            &device,
+            36,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+        ).unwrap();
+
+        buffer.fill(&[
+            0.1f32, -0.3f32, 0.0f32, 1.0f32, 5.0f32, 1.0f32, 1.0f32, 0.0f32, 1.0f32,
+        ]);
+
         let engine = VulkanEngine {
             window,
             entry,
@@ -95,6 +121,8 @@ impl VulkanEngine {
             pipeline,
             pools,
             graphics_command_buffers: command_buffers,
+            allocator,
+            buffers: vec![buffer]
         };
 
         engine.fill_command_buffers();
@@ -308,6 +336,8 @@ impl VulkanEngine {
                     self.pipeline.pipeline
                 );
 
+                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.buffers[0].buffer], &[0]);
+
                 self.device.cmd_draw(command_buffer, 1, 1, 0, 0);
 
                 self.device.cmd_end_render_pass(command_buffer);
@@ -322,12 +352,24 @@ impl Drop for VulkanEngine{
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().expect("Failed to wait?");
+
+            for buffer in &self.buffers {
+                self.allocator.free(buffer.allocation.to_owned()).unwrap();
+                self.device.destroy_buffer(buffer.buffer, None);
+            }
+
             self.pipeline.cleanup(&self.device);
+
             self.device.destroy_render_pass(self.render_pass, None);
+
             self.swapchain.cleanup(&self.device);
+
             self.device.destroy_device(None);
+
             ManuallyDrop::drop(&mut self.surfaces);
+
             ManuallyDrop::drop(&mut self.debug);
+
             self.instance.destroy_instance(None);
         }
     }
@@ -718,7 +760,38 @@ impl EnginePipeline {
             fragment_shader_stage.build()
         ];
 
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::builder();
+        let vertex_attrib_descs = [
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 0,
+                offset: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 1,
+                offset: 16,
+                format: vk::Format::R32_SFLOAT,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 2,
+                offset: 20,
+                format: vk::Format::R32G32B32A32_SFLOAT,
+            },
+        ];
+
+        let vertex_binding_descs = [
+            vk::VertexInputBindingDescription {
+                binding: 0,
+                stride: 16,
+                input_rate: vk::VertexInputRate::VERTEX,
+            }
+        ];
+
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_attribute_descriptions(&vertex_attrib_descs)
+            .vertex_binding_descriptions(&vertex_binding_descs);
 
         let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::builder()
             .topology(vk::PrimitiveTopology::POINT_LIST);
@@ -870,6 +943,64 @@ impl Pools {
             device.destroy_command_pool(self.command_pool_graphics, None);
             device.destroy_command_pool(self.command_pool_transfer, None);
         }
+    }
+}
+
+struct EngineBuffer {
+    buffer: vk::Buffer,
+    allocation: Allocation,
+}
+
+impl EngineBuffer {
+    fn new(
+        allocator: &mut Allocator,
+        device: &Device,
+        size_in_bytes: u64,
+        usage: vk::BufferUsageFlags,
+        memory_usage: gpu_allocator::MemoryLocation
+    ) -> Result<EngineBuffer, gpu_allocator::AllocationError> {
+        let buffer_info = vk::BufferCreateInfo::builder()
+            .size(size_in_bytes)
+            .usage(usage);
+
+        let buffer = unsafe {
+            device.create_buffer(&buffer_info, None).unwrap()
+        };
+
+        let requirements = unsafe {
+            device.get_buffer_memory_requirements(buffer)
+        };
+
+        let allocation = allocator.allocate(
+            &AllocationCreateDesc {
+                name: "Vertex Buffer",
+                requirements,
+                location: memory_usage,
+                linear: true
+            }
+        ).unwrap();
+
+        unsafe {
+            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()).unwrap();
+        }
+
+        Ok(EngineBuffer {
+            buffer,
+            allocation
+        })
+    }
+
+    fn fill<T: Sized>(
+        &self,
+        data: &[T]
+    ) -> Result<(), gpu_allocator::AllocationError> {
+        let data_ptr = self.allocation.mapped_ptr().unwrap().as_ptr() as *mut T;
+
+        unsafe {
+            data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
+        }
+
+        Ok(())
     }
 }
 
