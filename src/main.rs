@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
@@ -43,8 +44,8 @@ struct VulkanEngine {
     pipeline: EnginePipeline,
     pools: Pools,
     graphics_command_buffers: Vec<CommandBuffer>,
-    allocator: gpu_allocator::vulkan::Allocator,
-    buffers: Vec<EngineBuffer>,
+    allocator: ManuallyDrop<Allocator>,
+    models: Vec<Model<[f32; 3], InstanceData>>,
 }
 
 impl VulkanEngine {
@@ -93,41 +94,25 @@ impl VulkanEngine {
             }
         ).unwrap();
 
-        let position_buffer = EngineBuffer::new(
-            &mut allocator,
-            &device,
-            48 * 2,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
-        ).unwrap();
-        position_buffer.fill(&[
-            // x y z 1
-            0.5f32, 0.5f32, 0.0f32, 1.0f32,
-            0.0f32, -0.5f32, 0.0f32, 1.0f32,
-            -0.5f32, 0.5f32, 0.0f32, 1.0f32,
+        let mut cube = Model::cube();
 
-            0.5f32, 1f32, 0.0f32, 1.0f32,
-            0.0f32, 0f32, 0.0f32, 1.0f32,
-            -0.5f32, 1f32, 0.0f32, 1.0f32,
-        ]);
+        cube.insert_visibly(InstanceData {
+            position: [0.0, 0.0, 0.0],
+            color: [1.0, 0.0, 0.0],
+        });
+        cube.insert_visibly(InstanceData {
+            position: [0.0, 0.25, 0.0],
+            color: [0.6, 0.5, 0.0],
+        });
+        cube.insert_visibly(InstanceData {
+            position: [0.0, 0.5, 0.0],
+            color: [0.0, 0.5, 0.0],
+        });
 
-        let size_color_buffer = EngineBuffer::new(
-            &mut allocator,
-            &device,
-            60 * 2,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
-        ).unwrap();
-        size_color_buffer.fill(&[
-            // size r g b
-            15.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32,
-            15.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32,
-            15.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32,
+        cube.update_vertex_buffer(&device, &mut allocator).unwrap();
+        cube.update_instance_buffer(&device, &mut allocator).unwrap();
 
-            15.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32,
-            15.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32,
-            15.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32,
-        ]);
+        let models = vec![cube];
 
         let engine = VulkanEngine {
             window,
@@ -145,11 +130,11 @@ impl VulkanEngine {
             pipeline,
             pools,
             graphics_command_buffers: command_buffers,
-            allocator,
-            buffers: vec![position_buffer, size_color_buffer]
+            allocator: ManuallyDrop::new(allocator),
+            models,
         };
 
-        engine.fill_command_buffers();
+        engine.fill_command_buffers(&engine.models);
 
         Ok(engine)
     }
@@ -321,7 +306,7 @@ impl VulkanEngine {
         }
     }
 
-    fn fill_command_buffers(&self) {
+    fn fill_command_buffers(&self, models: &[Model<[f32; 3], InstanceData>]) {
         for (i, &command_buffer) in self.graphics_command_buffers.iter().enumerate() {
             let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
 
@@ -360,10 +345,10 @@ impl VulkanEngine {
                     self.pipeline.pipeline
                 );
 
-                self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.buffers[0].buffer], &[0]);
-                self.device.cmd_bind_vertex_buffers(command_buffer, 1, &[self.buffers[1].buffer], &[0]);
-
-                self.device.cmd_draw(command_buffer, 6, 1, 0, 0);
+                //draw models
+                for model in models {
+                    model.draw(&self.device, command_buffer);
+                }
 
                 self.device.cmd_end_render_pass(command_buffer);
 
@@ -378,9 +363,16 @@ impl Drop for VulkanEngine{
         unsafe {
             self.device.device_wait_idle().expect("Failed to wait?");
 
-            for buffer in self.buffers.iter_mut() {
-                buffer.cleanup(&mut self.allocator, &self.device);
+            for m in &mut self.models {
+                if let Some(vb) = &mut m.vertex_buffer {
+                    vb.cleanup(&mut self.allocator, &self.device);
+                }
+                if let Some(ib) = &mut m.instance_buffer {
+                    ib.cleanup(&mut self.allocator, &self.device);
+                }
             }
+
+            ManuallyDrop::drop(&mut self.allocator);
 
             self.pools.cleanup(&self.device);
 
@@ -797,26 +789,26 @@ impl EnginePipeline {
                 binding: 1,
                 location: 1,
                 offset: 0,
-                format: vk::Format::R32_SFLOAT,
+                format: vk::Format::R32G32B32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
                 location: 2,
-                offset: 4,
-                format: vk::Format::R32G32B32A32_SFLOAT,
+                offset: 12,
+                format: vk::Format::R32G32B32_SFLOAT,
             },
         ];
 
         let vertex_binding_descs = [
             vk::VertexInputBindingDescription {
                 binding: 0,
-                stride: 16,
+                stride: 12,
                 input_rate: vk::VertexInputRate::VERTEX,
             },
             vk::VertexInputBindingDescription {
                 binding: 1,
-                stride: 20,
-                input_rate: vk::VertexInputRate::VERTEX,
+                stride: 24,
+                input_rate: vk::VertexInputRate::INSTANCE,
             },
         ];
 
@@ -980,6 +972,9 @@ impl Pools {
 struct EngineBuffer {
     buffer: vk::Buffer,
     allocation: Option<Allocation>,
+    size_in_bytes: u64,
+    usage: vk::BufferUsageFlags,
+    memory_usage: gpu_allocator::MemoryLocation,
 }
 
 impl EngineBuffer {
@@ -1017,14 +1012,38 @@ impl EngineBuffer {
 
         Ok(EngineBuffer {
             buffer,
-            allocation: Some(allocation)
+            allocation: Some(allocation),
+            size_in_bytes,
+            usage,
+            memory_usage,
         })
     }
 
     fn fill<T: Sized>(
-        &self,
+        &mut self,
+        allocator: &mut Allocator,
+        device: &Device,
         data: &[T]
     ) -> Result<(), gpu_allocator::AllocationError> {
+        let bytes_to_write = (data.len() * std::mem::size_of::<T>()) as u64;
+
+        if bytes_to_write > self.size_in_bytes {
+            unsafe {
+                allocator.free(self.allocation.take().unwrap()).unwrap();
+                device.destroy_buffer(self.buffer, None);
+            }
+
+            let new_buffer = EngineBuffer::new(
+                allocator,
+                device,
+                bytes_to_write,
+                self.usage,
+                self.memory_usage
+            )?;
+
+            *self = new_buffer;
+        }
+
         if let Some(allocation) = &self.allocation {
             let data_ptr = allocation.mapped_ptr().unwrap().as_ptr() as *mut T;
 
@@ -1043,6 +1062,266 @@ impl EngineBuffer {
     ) {
         allocator.free(self.allocation.take().unwrap()).unwrap();
         device.destroy_buffer(self.buffer, None);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InvalidHandle;
+
+impl std::fmt::Display for InvalidHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "invalid handle")
+    }
+}
+impl std::error::Error for InvalidHandle {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+#[repr(C)]
+struct InstanceData {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+struct Model<V, I> {
+    vertex_data: Vec<V>,
+    handle_to_index: HashMap<usize, usize>,
+    handles: Vec<usize>,
+    instances: Vec<I>,
+    first_invisible: usize,
+    next_handle: usize,
+    vertex_buffer: Option<EngineBuffer>,
+    instance_buffer: Option<EngineBuffer>,
+}
+
+impl<V, I> Model<V, I> {
+    fn get(&self, handle: usize) -> Option<&I> {
+        if let Some(&index) = self.handle_to_index.get(&handle) {
+            self.instances.get(index)
+        }
+        else {
+            None
+        }
+    }
+
+    fn get_mut(&mut self, handle: usize) -> Option<&mut I> {
+        if let Some(&index) = self.handle_to_index.get(&handle) {
+            self.instances.get_mut(index)
+        } else {
+            None
+        }
+    }
+
+    fn swap_by_handle(&mut self, h1: usize, h2: usize) -> Result<(), InvalidHandle> {
+        if h1 == h2 {
+            return Ok(());
+        }
+
+        if let (Some(&i1), Some(&i2)) = (
+            self.handle_to_index.get(&h1),
+            self.handle_to_index.get(&h2)
+        ) {
+            self.handles.swap(i1, i2);
+            self.instances.swap(i1, i2);
+            self.handle_to_index.insert(i1, h2);
+            self.handle_to_index.insert(i2, h1);
+            Ok(())
+        }
+        else {
+            Err(InvalidHandle)
+        }
+    }
+
+    fn swap_by_index(&mut self, index1: usize, index2: usize) {
+        if index1 == index2 {
+            return;
+        }
+
+        let handle1 = self.handles[index1];
+        let handle2 = self.handles[index2];
+        self.handles.swap(index1, index2);
+        self.instances.swap(index1, index2);
+        self.handle_to_index.insert(index1, handle2);
+        self.handle_to_index.insert(index2, handle1);
+    }
+
+    fn is_visible(&self, handle: usize) -> Result<bool, InvalidHandle> {
+        if let Some(index) = self.handle_to_index.get(&handle) {
+            Ok(index < &self.first_invisible)
+        }
+        else {
+            Err(InvalidHandle)
+        }
+    }
+
+    fn make_visible(&mut self, handle: usize) -> Result<(), InvalidHandle> {
+        if let Some(&index) = self.handle_to_index.get(&handle) {
+            if index < self.first_invisible {
+                return Ok(());
+            }
+
+            self.swap_by_index(index, self.first_invisible);
+            self.first_invisible += 1;
+            Ok(())
+        } else {
+            Err(InvalidHandle)
+        }
+    }
+
+    fn make_invisible(&mut self, handle: usize) -> Result<(), InvalidHandle> {
+        if let Some(&index) = self.handle_to_index.get(&handle) {
+            if index >= self.first_invisible {
+                return Ok(());
+            }
+
+            self.swap_by_index(index, self.first_invisible - 1);
+            self.first_invisible -= 1;
+            Ok(())
+        } else {
+            Err(InvalidHandle)
+        }
+    }
+
+    fn insert(&mut self, element: I) -> usize {
+        let handle = self.next_handle;
+        self.next_handle += 1;
+
+        let index = self.instances.len();
+        self.instances.push(element);
+        self.handles.push(handle);
+        self.handle_to_index.insert(handle, index);
+
+        handle
+    }
+
+    fn insert_visibly(&mut self, element: I) -> usize {
+        let new_handle = self.insert(element);
+        self.make_visible(new_handle).ok();
+        new_handle
+    }
+
+    fn remove(&mut self, handle: usize) -> Result<I, InvalidHandle> {
+        if let Some(&index) = self.handle_to_index.get(&handle) {
+            if index < self.first_invisible {
+                self.swap_by_index(index, self.first_invisible - 1);
+                self.first_invisible -= 1;
+            }
+
+            self.swap_by_index(self.first_invisible, self.instances.len() - 1);
+            self.handles.pop();
+            self.handle_to_index.remove(&handle);
+
+            Ok(self.instances.pop().unwrap())
+        } else {
+            Err(InvalidHandle)
+        }
+    }
+
+    fn update_vertex_buffer(&mut self, device: &Device, allocator: &mut Allocator) -> Result<(), gpu_allocator::AllocationError> {
+        if let Some(buffer) = &mut self.vertex_buffer {
+            buffer.fill(allocator, device, &self.vertex_data)?;
+            Ok(())
+        } else {
+            let bytes = (self.vertex_data.len() * std::mem::size_of::<V>()) as u64;
+            let mut buffer = EngineBuffer::new(
+                allocator,
+                device,
+                bytes,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                gpu_allocator::MemoryLocation::CpuToGpu,
+            )?;
+
+            buffer.fill(allocator, device, &self.vertex_data)?;
+            self.vertex_buffer = Some(buffer);
+
+            Ok(())
+        }
+    }
+
+    fn update_instance_buffer(&mut self, device: &Device, allocator: &mut Allocator) -> Result<(), gpu_allocator::AllocationError> {
+        if let Some(buffer) = &mut self.instance_buffer {
+            buffer.fill(allocator, device, &self.instances[0..self.first_invisible])?;
+            Ok(())
+        } else {
+            let bytes = (self.first_invisible * std::mem::size_of::<I>()) as u64;
+            let mut buffer = EngineBuffer::new(
+                allocator,
+                device,
+                bytes,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                gpu_allocator::MemoryLocation::CpuToGpu,
+            )?;
+
+            buffer.fill(allocator, device, &self.instances[0..self.first_invisible])?;
+            self.instance_buffer = Some(buffer);
+
+            Ok(())
+        }
+    }
+
+    fn draw(&self, device: &Device, command_buffer: CommandBuffer) {
+        if let Some(vertex_buffer) = &self.vertex_buffer {
+            if let Some(instance_buffer) = &self.instance_buffer {
+                if self.first_invisible > 0 {
+                    unsafe {
+                        device.cmd_bind_vertex_buffers(
+                            command_buffer,
+                            0,
+                            &[vertex_buffer.buffer],
+                            &[0]
+                        );
+
+                        device.cmd_bind_vertex_buffers(
+                            command_buffer,
+                            1,
+                            &[instance_buffer.buffer],
+                            &[0]
+                        );
+
+                        device.cmd_draw(
+                            command_buffer,
+                            self.vertex_data.len() as u32,
+                            self.first_invisible as u32,
+                            0,
+                            0,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Model<[f32; 3], InstanceData> {
+    fn cube() -> Self {
+        let lbf = [-0.1,0.1,0.0]; //lbf: left-bottom-front
+        let lbb = [-0.1,0.1,0.1];
+        let ltf = [-0.1,-0.1,0.0];
+        let ltb = [-0.1,-0.1,0.1];
+        let rbf = [0.1,0.1,0.0];
+        let rbb = [0.1,0.1,0.1];
+        let rtf = [0.1,-0.1,0.0];
+        let rtb = [0.1,-0.1,0.1];
+
+        Model {
+            vertex_data: vec![
+                lbf, lbb, rbb, lbf, rbb, rbf, //bottom
+                ltf, rtb, ltb, ltf, rtf, rtb, //top
+                lbf, rtf, ltf, lbf, rbf, rtf, //front
+                lbb, ltb, rtb, lbb, rtb, rbb, //back
+                lbf, ltf, lbb, lbb, ltf, ltb, //left
+                rbf, rbb, rtf, rbb, rtb, rtf, //right
+            ],
+            handle_to_index: HashMap::new(),
+            handles: Vec::new(),
+            instances: Vec::new(),
+            first_invisible: 0,
+            next_handle: 0,
+            vertex_buffer: None,
+            instance_buffer: None,
+        }
     }
 }
 
