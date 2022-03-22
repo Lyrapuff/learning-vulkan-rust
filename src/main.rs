@@ -9,7 +9,6 @@ use ash::vk::{Buffer, CommandBuffer, CommandPool, Extent2D, Framebuffer, Handle,
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 
 use winit::event_loop::EventLoop;
-use winit::platform::unix::WindowExtUnix;
 use winit::window::Window;
 use winit::event::{Event, WindowEvent};
 
@@ -68,7 +67,7 @@ impl VulkanEngine {
 
         let (device, queues) = Self::init_device_queues(&instance, physical_device, &queue_families, &layer_names)?;
 
-        let mut allocator = gpu_allocator::vulkan::Allocator::new(
+        let mut allocator = Allocator::new(
             &AllocatorCreateDesc {
                 instance: instance.clone(),
                 device: device.clone(),
@@ -96,28 +95,6 @@ impl VulkanEngine {
         let pools = Pools::init(&device, &queue_families)?;
         let command_buffers = pools.create_command_buffers(&device, swapchain.framebuffers.len())?;
 
-        // vertex buffer allocation
-
-        let mut cube = Model::cube();
-
-        cube.insert_visibly(InstanceData {
-            model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.05, 0.05, 0.0))
-                * na::Matrix4::new_scaling(0.1))
-                .into(),
-            color: [0.2, 0.4, 1.0],
-        });
-        cube.insert_visibly(InstanceData {
-            model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, -0.1))
-                * na::Matrix4::new_scaling(0.1))
-                .into(),
-            color: [1.0, 1.0, 0.2],
-        });
-
-        cube.update_vertex_buffer(&device, &mut allocator).unwrap();
-        cube.update_instance_buffer(&device, &mut allocator).unwrap();
-
-        let models = vec![cube];
-
         let engine = VulkanEngine {
             window,
             entry,
@@ -135,7 +112,7 @@ impl VulkanEngine {
             pools,
             graphics_command_buffers: command_buffers,
             allocator: ManuallyDrop::new(allocator),
-            models,
+            models: vec![],
         };
 
         engine.fill_command_buffers(&engine.models);
@@ -328,6 +305,64 @@ impl VulkanEngine {
         }
     }
 
+    fn update_command_buffer(&mut self, index: usize) -> Result<(), vk::Result> {
+        let command_buffer = self.graphics_command_buffers[index];
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
+
+        unsafe {
+            self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
+        }
+
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.08, 1.0],
+                }
+            },
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                }
+            }
+        ];
+
+        let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
+            .render_pass(self.render_pass)
+            .framebuffer(self.swapchain.framebuffers[index])
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: 0,
+                    y: 0,
+                },
+                extent: self.swapchain.extent,
+            })
+            .clear_values(&clear_values);
+
+        unsafe {
+            self.device.cmd_begin_render_pass(
+                command_buffer,
+                &render_pass_begin_info,
+                vk::SubpassContents::INLINE
+            );
+
+            self.device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.pipeline
+            );
+
+            for m in &self.models {
+                m.draw(&self.device, command_buffer);
+            }
+
+            self.device.cmd_end_render_pass(command_buffer);
+            self.device.end_command_buffer(command_buffer)?;
+        }
+
+        Ok(())
+    }
+
     fn fill_command_buffers(&self, models: &[Model<[f32; 3], InstanceData>]) {
         for (i, &command_buffer) in self.graphics_command_buffers.iter().enumerate() {
             let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
@@ -478,14 +513,8 @@ impl EngineSurface {
         entry: &ash::Entry,
         instance: &ash::Instance,
     ) -> Result<EngineSurface, vk::Result> {
-        let x11_display = window.xlib_display().unwrap();
-        let x11_window = window.xlib_window().unwrap();
-        let x11_create_info = vk::XlibSurfaceCreateInfoKHR::builder()
-            .window(x11_window)
-            .dpy(x11_display as *mut vk::Display);
-
         let xlib_surface_loader = ash::extensions::khr::XlibSurface::new(&entry, &instance);
-        let surface = unsafe { xlib_surface_loader.create_xlib_surface(&x11_create_info, None)? };
+        let surface = unsafe { ash_window::create_surface(&entry, &instance, &window, None) }?;
         let surface_loader = ash::extensions::khr::Surface::new(&entry, &instance);
 
         Ok(EngineSurface {
@@ -1454,6 +1483,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut engine = VulkanEngine::init(window)?;
 
+    let mut cube = Model::cube();
+
+    cube.insert_visibly(InstanceData {
+        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, 0.1))
+            * na::Matrix4::new_scaling(0.1))
+            .into(),
+        color: [0.2, 0.4, 1.0],
+    });
+    cube.insert_visibly(InstanceData {
+        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.05, 0.05, 0.0))
+            * na::Matrix4::new_scaling(0.1))
+            .into(),
+        color: [1.0, 1.0, 0.2],
+    });
+    for i in 0..10 {
+        for j in 0..10 {
+            cube.insert_visibly(InstanceData {
+                model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(
+                    i as f32 * 0.2 - 1.0,
+                    j as f32 * 0.2 - 1.0,
+                    0.5,
+                )) * na::Matrix4::new_scaling(0.03))
+                    .into(),
+                color: [1.0, i as f32 * 0.07, j as f32 * 0.07],
+            });
+            cube.insert_visibly(InstanceData {
+                model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(
+                    i as f32 * 0.2 - 1.0,
+                    0.0,
+                    j as f32 * 0.2 - 1.0,
+                )) * na::Matrix4::new_scaling(0.02))
+                    .into(),
+                color: [i as f32 * 0.07, j as f32 * 0.07, 1.0],
+            });
+        }
+    }
+    cube.insert_visibly(InstanceData {
+        model_matrix: (na::Matrix4::from_scaled_axis(na::Vector3::new(0.0, 0.0, 1.4))
+            * na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.5, 0.0))
+            * na::Matrix4::new_scaling(0.1))
+            .into(),
+        color: [0.0, 0.5, 0.0],
+    });
+    cube.insert_visibly(InstanceData {
+        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.5, 0.0, 0.0))
+            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(0.5, 0.01, 0.01)))
+            .into(),
+        color: [1.0, 0.5, 0.5],
+    });
+    cube.insert_visibly(InstanceData {
+        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.5, 0.0))
+            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(0.01, 0.5, 0.01)))
+            .into(),
+        color: [0.5, 1.0, 0.5],
+    });
+    cube.insert_visibly(InstanceData {
+        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, 0.0))
+            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(0.01, 0.01, 0.5)))
+            .into(),
+        color: [0.5, 0.5, 1.0],
+    });
+
+    cube.update_vertex_buffer(&engine.device, &mut engine.allocator).unwrap();
+    cube.update_instance_buffer(&engine.device, &mut engine.allocator).unwrap();
+
+    let models = vec![cube];
+    engine.models = models;
+
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::WindowEvent {
@@ -1487,6 +1584,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     engine.device.reset_fences(
                         &[engine.swapchain.may_begin_drawing[engine.swapchain.current_image]]
                     ).expect("Resetting fences");
+
+                    for m in &mut engine.models {
+                        m.update_instance_buffer(&engine.device, &mut engine.allocator);
+                    }
+
+                    engine.update_command_buffer(image_index as usize)
+                        .expect("Failed to update command buffer");
 
                     let semaphores_available = [engine.swapchain.image_available[engine.swapchain.current_image]];
                     let waiting_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
