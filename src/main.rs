@@ -5,7 +5,7 @@ use std::mem::ManuallyDrop;
 
 use ash::{Device, Entry, Instance, vk};
 use ash::extensions::khr::Swapchain;
-use ash::vk::{Buffer, CommandBuffer, CommandPool, Extent2D, Framebuffer, Handle, Image, ImageView, MemoryRequirements, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
+use ash::vk::{Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Extent2D, Framebuffer, Handle, Image, ImageView, MemoryRequirements, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 
 use winit::event_loop::EventLoop;
@@ -47,6 +47,9 @@ struct VulkanEngine {
     graphics_command_buffers: Vec<CommandBuffer>,
     allocator: ManuallyDrop<Allocator>,
     models: Vec<Model<[f32; 3], InstanceData>>,
+    uniform_buffer: EngineBuffer,
+    descriptor_pool: DescriptorPool,
+    descriptor_sets: Vec<DescriptorSet>,
 }
 
 impl VulkanEngine {
@@ -95,6 +98,68 @@ impl VulkanEngine {
         let pools = Pools::init(&device, &queue_families)?;
         let command_buffers = pools.create_command_buffers(&device, swapchain.framebuffers.len())?;
 
+        let mut uniform_buffer = EngineBuffer::new(
+            &mut allocator,
+            &device,
+            64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            gpu_allocator::MemoryLocation::CpuToGpu
+        ).unwrap();
+
+        let camera_transform: [[f32; 4]; 4] = na::Matrix4::identity().into();
+
+        uniform_buffer.fill(&mut allocator, &device, &camera_transform).unwrap();
+
+        // Descriptor pool
+
+        let pool_sizes = [
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: swapchain.amount_of_images
+            }
+        ];
+
+        let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
+            .max_sets(swapchain.amount_of_images)
+            .pool_sizes(&pool_sizes);
+
+        let descriptor_pool = unsafe {
+            device.create_descriptor_pool(&descriptor_pool_info, None)
+        }?;
+
+        let desc_layouts = vec![pipeline.descriptor_set_layouts[0]; swapchain.amount_of_images as usize];
+
+        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&desc_layouts);
+
+        let descriptor_sets = unsafe {
+            device.allocate_descriptor_sets(&descriptor_set_allocate_info)
+        }?;
+
+        for (i, desc_set) in descriptor_sets.iter().enumerate() {
+            let buffer_infos = [
+                vk::DescriptorBufferInfo {
+                    buffer: uniform_buffer.buffer,
+                    offset: 0,
+                    range: 64,
+                }
+            ];
+
+            let desc_sets_write = [
+                vk::WriteDescriptorSet::builder()
+                    .dst_set(*desc_set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&buffer_infos)
+                    .build()
+            ];
+
+            unsafe {
+                device.update_descriptor_sets(&desc_sets_write, &[]);
+            };
+        }
+
         let engine = VulkanEngine {
             window,
             entry,
@@ -113,6 +178,9 @@ impl VulkanEngine {
             graphics_command_buffers: command_buffers,
             allocator: ManuallyDrop::new(allocator),
             models: vec![],
+            uniform_buffer,
+            descriptor_pool,
+            descriptor_sets,
         };
 
         engine.fill_command_buffers(&engine.models);
@@ -352,6 +420,15 @@ impl VulkanEngine {
                 self.pipeline.pipeline
             );
 
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.layout,
+                0,
+                &[self.descriptor_sets[index]],
+                &[],
+            );
+
             for m in &self.models {
                 m.draw(&self.device, command_buffer);
             }
@@ -427,6 +504,8 @@ impl Drop for VulkanEngine{
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().expect("Failed to wait?");
+
+            self.uniform_buffer.cleanup(&mut self.allocator, &self.device);
 
             for m in &mut self.models {
                 if let Some(vb) = &mut m.vertex_buffer {
@@ -868,6 +947,7 @@ impl EngineSwapchain {
 struct EnginePipeline {
     pipeline: Pipeline,
     layout: PipelineLayout,
+    descriptor_set_layouts: Vec<DescriptorSetLayout>
 }
 
 impl EnginePipeline {
@@ -905,6 +985,29 @@ impl EnginePipeline {
             vertex_shader_stage.build(),
             fragment_shader_stage.build()
         ];
+
+        // Creating descriptor sets
+
+        let descriptor_set_layout_binding_descs = [
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .build()
+        ];
+
+        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&descriptor_set_layout_binding_descs);
+
+        let descriptor_set_layout = unsafe {
+            device.create_descriptor_set_layout(&descriptor_set_layout_info, None)
+        }?;
+
+        let desc_layouts = vec![descriptor_set_layout];
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(&desc_layouts);
 
         let vertex_attrib_descs = [
             vk::VertexInputAttributeDescription {
@@ -1019,7 +1122,6 @@ impl EnginePipeline {
         let colorblend_info = vk::PipelineColorBlendStateCreateInfo::builder()
             .attachments(&colorblend_attachments);
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder();
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(&pipeline_layout_info, None)?
         };
@@ -1058,11 +1160,16 @@ impl EnginePipeline {
         Ok(EnginePipeline {
             pipeline: graphics_pipeline,
             layout: pipeline_layout,
+            descriptor_set_layouts: desc_layouts
         })
     }
 
     fn cleanup(&self, device: &ash::Device) {
         unsafe {
+            for dsl in &self.descriptor_set_layouts {
+                device.destroy_descriptor_set_layout(*dsl, None);
+            }
+
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
         }
@@ -1477,6 +1584,85 @@ impl Model<[f32; 3], InstanceData> {
     }
 }
 
+struct Camera {
+    view_matrix: na::Matrix4<f32>,
+    position: na::Vector3<f32>,
+    view_direction: na::Unit<na::Vector3<f32>>,
+    down_direction: na::Unit<na::Vector3<f32>>,
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Camera {
+            view_matrix: na::Matrix4::identity(),
+            position: na::Vector3::new(0.0, 0.0, 0.0),
+            view_direction: na::Unit::new_normalize(na::Vector3::new(0.0, 0.0, 1.0)),
+            down_direction: na::Unit::new_normalize(na::Vector3::new(0.0, 1.0, 0.0)),
+        }
+    }
+}
+
+impl Camera {
+    fn update_buffer(&self, allocator: &mut Allocator, device: &Device, buffer: &mut EngineBuffer) {
+        let data: [[f32; 4]; 4] = self.view_matrix.into();
+        buffer.fill(allocator, &device, &data);
+    }
+
+    fn update_view_matrix(&mut self) {
+        let right = na::Unit::new_normalize(self.down_direction.cross(&self.view_direction));
+        let m = na::Matrix4::new(
+            right.x,
+            right.y,
+            right.z,
+            -right.dot(&self.position), //
+            self.down_direction.x,
+            self.down_direction.y,
+            self.down_direction.z,
+            -self.down_direction.dot(&self.position), //
+            self.view_direction.x,
+            self.view_direction.y,
+            self.view_direction.z,
+            -self.view_direction.dot(&self.position), //
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        self.view_matrix = m;
+    }
+
+    fn move_forward(&mut self, distance: f32) {
+        self.position += distance * self.view_direction.as_ref();
+        self.update_view_matrix();
+    }
+
+    fn move_backward(&mut self, distance: f32) {
+        self.move_forward(-distance);
+    }
+
+    fn turn_right(&mut self, angle: f32) {
+        let rotation = na::Rotation3::from_axis_angle(&self.down_direction, angle);
+        self.view_direction = rotation * self.view_direction;
+        self.update_view_matrix();
+    }
+
+    fn turn_left(&mut self, angle: f32) {
+        self.turn_right(-angle);
+    }
+
+    fn turn_up(&mut self, angle: f32) {
+        let right = na::Unit::new_normalize(self.down_direction.cross(&self.view_direction));
+        let rotation = na::Rotation3::from_axis_angle(&right, angle);
+        self.view_direction = rotation * self.view_direction;
+        self.down_direction = rotation * self.down_direction;
+        self.update_view_matrix();
+    }
+
+    fn turn_down(&mut self, angle: f32) {
+        self.turn_up(-angle);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new();
     let window = Window::new(&event_loop)?;
@@ -1551,6 +1737,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let models = vec![cube];
     engine.models = models;
 
+    let mut camera = Camera::default();
+
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::WindowEvent {
@@ -1558,6 +1746,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } => {
                 *control_flow = winit::event_loop::ControlFlow::Exit;
+            }
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput { input, .. },
+                ..
+            } => match input {
+                winit::event::KeyboardInput {
+                    state: winit::event::ElementState::Pressed,
+                    virtual_keycode: Some(keycode),
+                    ..
+                } => match keycode {
+                    winit::event::VirtualKeyCode::Right => {
+                        camera.turn_right(0.1);
+                    }
+                    winit::event::VirtualKeyCode::Left => {
+                        camera.turn_left(0.1);
+                    }
+                    winit::event::VirtualKeyCode::Up => {
+                        camera.move_forward(0.05);
+                    }
+                    winit::event::VirtualKeyCode::Down => {
+                        camera.move_backward(0.05);
+                    }
+                    winit::event::VirtualKeyCode::PageUp => {
+                        camera.turn_up(0.02);
+                    }
+                    winit::event::VirtualKeyCode::PageDown => {
+                        camera.turn_down(0.02);
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
             Event::MainEventsCleared => {
                 engine.window.request_redraw();
@@ -1584,6 +1803,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     engine.device.reset_fences(
                         &[engine.swapchain.may_begin_drawing[engine.swapchain.current_image]]
                     ).expect("Resetting fences");
+
+                    camera.update_buffer(&mut engine.allocator, &engine.device, &mut engine.uniform_buffer);
 
                     for m in &mut engine.models {
                         m.update_instance_buffer(&engine.device, &mut engine.allocator);
