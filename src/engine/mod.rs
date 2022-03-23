@@ -535,6 +535,11 @@ impl Drop for VulkanEngine{
                 if let Some(vb) = &mut m.vertex_buffer {
                     vb.cleanup(&mut self.allocator, &self.device);
                 }
+
+                if let Some(ib) = &mut m.index_buffer {
+                    ib.cleanup(&mut self.allocator, &self.device);
+                }
+
                 if let Some(ib) = &mut m.instance_buffer {
                     ib.cleanup(&mut self.allocator, &self.device);
                 }

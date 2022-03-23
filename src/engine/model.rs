@@ -25,12 +25,14 @@ pub struct InstanceData {
 
 pub struct Model<V, I> {
     pub vertex_data: Vec<V>,
+    pub index_data: Vec<u32>,
     pub handle_to_index: HashMap<usize, usize>,
     pub handles: Vec<usize>,
     pub instances: Vec<I>,
     pub first_invisible: usize,
     pub next_handle: usize,
     pub vertex_buffer: Option<EngineBuffer>,
+    pub index_buffer: Option<EngineBuffer>,
     pub instance_buffer: Option<EngineBuffer>,
 }
 
@@ -157,7 +159,11 @@ impl<V, I> Model<V, I> {
         }
     }
 
-    pub fn update_vertex_buffer(&mut self, device: &ash::Device, allocator: &mut Allocator) -> Result<(), gpu_allocator::AllocationError> {
+    pub fn update_vertex_buffer(
+        &mut self,
+        device: &ash::Device,
+        allocator: &mut Allocator
+    ) -> Result<(), gpu_allocator::AllocationError> {
         if let Some(buffer) = &mut self.vertex_buffer {
             buffer.fill(allocator, device, &self.vertex_data)?;
             Ok(())
@@ -173,6 +179,31 @@ impl<V, I> Model<V, I> {
 
             buffer.fill(allocator, device, &self.vertex_data)?;
             self.vertex_buffer = Some(buffer);
+
+            Ok(())
+        }
+    }
+
+    pub fn update_index_buffer(
+        &mut self,
+        device: &ash::Device,
+        allocator: &mut Allocator
+    ) -> Result<(), gpu_allocator::AllocationError> {
+        if let Some(buffer) = &mut self.index_buffer {
+            buffer.fill(allocator, device, &self.index_data)?;
+            Ok(())
+        } else {
+            let bytes = (self.index_data.len() * std::mem::size_of::<u32>()) as u64;
+            let mut buffer = EngineBuffer::new(
+                allocator,
+                device,
+                bytes,
+                vk::BufferUsageFlags::INDEX_BUFFER,
+                gpu_allocator::MemoryLocation::CpuToGpu,
+            )?;
+
+            buffer.fill(allocator, device, &self.index_data)?;
+            self.index_buffer = Some(buffer);
 
             Ok(())
         }
@@ -201,30 +232,40 @@ impl<V, I> Model<V, I> {
 
     pub fn draw(&self, device: &ash::Device, command_buffer: vk::CommandBuffer) {
         if let Some(vertex_buffer) = &self.vertex_buffer {
-            if let Some(instance_buffer) = &self.instance_buffer {
-                if self.first_invisible > 0 {
-                    unsafe {
-                        device.cmd_bind_vertex_buffers(
-                            command_buffer,
-                            0,
-                            &[vertex_buffer.buffer],
-                            &[0]
-                        );
+            if let Some(index_buffer) = &self.index_buffer {
+                if let Some(instance_buffer) = &self.instance_buffer {
+                    if self.first_invisible > 0 {
+                        unsafe {
+                            device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                0,
+                                &[vertex_buffer.buffer],
+                                &[0]
+                            );
 
-                        device.cmd_bind_vertex_buffers(
-                            command_buffer,
-                            1,
-                            &[instance_buffer.buffer],
-                            &[0]
-                        );
+                            device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                1,
+                                &[instance_buffer.buffer],
+                                &[0]
+                            );
 
-                        device.cmd_draw(
-                            command_buffer,
-                            self.vertex_data.len() as u32,
-                            self.first_invisible as u32,
-                            0,
-                            0,
-                        );
+                            device.cmd_bind_index_buffer(
+                                command_buffer,
+                                index_buffer.buffer,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+
+                            device.cmd_draw_indexed(
+                                command_buffer,
+                                self.index_data.len() as u32,
+                                self.first_invisible as u32,
+                                0,
+                                0,
+                                0,
+                            );
+                        }
                     }
                 }
             }
@@ -244,13 +285,14 @@ impl Model<[f32; 3], InstanceData> {
         let rtb = [1.0,-1.0,1.0];
 
         Model {
-            vertex_data: vec![
-                lbf, lbb, rbb, lbf, rbb, rbf, //bottom
-                ltf, rtb, ltb, ltf, rtf, rtb, //top
-                lbf, rtf, ltf, lbf, rbf, rtf, //front
-                lbb, ltb, rtb, lbb, rtb, rbb, //back
-                lbf, ltf, lbb, lbb, ltf, ltb, //left
-                rbf, rbb, rtf, rbb, rtb, rtf, //right
+            vertex_data: vec![lbf, lbb, ltf, ltb, rbf, rbb, rtf, rtb],
+            index_data: vec![
+                0, 1, 5, 0, 5, 4, //bottom
+                2, 7, 3, 2, 6, 7, //top
+                0, 6, 2, 0, 4, 6, //front
+                1, 3, 7, 1, 7, 5, //back
+                0, 2, 1, 1, 2, 3, //left
+                4, 5, 6, 5, 7, 6, //right
             ],
             handle_to_index: HashMap::new(),
             handles: Vec::new(),
@@ -258,6 +300,7 @@ impl Model<[f32; 3], InstanceData> {
             first_invisible: 0,
             next_handle: 0,
             vertex_buffer: None,
+            index_buffer: None,
             instance_buffer: None,
         }
     }
