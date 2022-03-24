@@ -9,26 +9,19 @@ pub mod model;
 
 pub mod camera;
 
-use std::collections::HashMap;
-use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
 
 use ash::{Device, Entry, Instance, vk};
-use ash::extensions::khr::Swapchain;
-use ash::vk::{Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Extent2D, Framebuffer, Handle, Image, ImageView, MemoryRequirements, Offset2D, PhysicalDevice, PhysicalDeviceProperties, Pipeline, PipelineLayout, Queue, Rect2D, RenderPass, Viewport};
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 
-use winit::event_loop::EventLoop;
 use winit::window::Window;
-use winit::event::{Event, WindowEvent};
 
 use nalgebra as na;
 
-use crate::engine::camera::Camera;
 use crate::engine::buffer::EngineBuffer;
 use crate::engine::debug::EngineDebug;
-use crate::engine::model::{InstanceData, Model};
+use crate::engine::model::{InstanceData, Model, VertexData};
 use crate::engine::pipeline::EnginePipeline;
 use crate::engine::pools::Pools;
 use crate::engine::queue_families::QueueFamilies;
@@ -53,24 +46,24 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 pub struct VulkanEngine {
     pub window: Window,
     pub entry: Entry,
-    pub  instance: Instance,
+    pub instance: Instance,
     pub debug: ManuallyDrop<EngineDebug>,
-    pub  surfaces: ManuallyDrop<EngineSurface>,
-    pub physical_device: PhysicalDevice,
-    pub  physical_device_properties: PhysicalDeviceProperties,
-    pub  queue_families: QueueFamilies,
+    pub surfaces: ManuallyDrop<EngineSurface>,
+    pub physical_device: vk::PhysicalDevice,
+    pub physical_device_properties: vk::PhysicalDeviceProperties,
+    pub queue_families: QueueFamilies,
     pub queues: Queues,
-    pub  device: Device,
-    pub  swapchain: EngineSwapchain,
-    pub render_pass: RenderPass,
-    pub  pipeline: EnginePipeline,
-    pub   pools: Pools,
-    pub  graphics_command_buffers: Vec<CommandBuffer>,
-    pub  allocator: ManuallyDrop<Allocator>,
-    pub  models: Vec<Model<[f32; 3], InstanceData>>,
-    pub  uniform_buffer: EngineBuffer,
-    pub  descriptor_pool: DescriptorPool,
-    pub  descriptor_sets: Vec<DescriptorSet>,
+    pub device: Device,
+    pub swapchain: EngineSwapchain,
+    pub render_pass: vk::RenderPass,
+    pub pipeline: EnginePipeline,
+    pub pools: Pools,
+    pub graphics_command_buffers: Vec<vk::CommandBuffer>,
+    pub allocator: ManuallyDrop<Allocator>,
+    pub models: Vec<Model<VertexData, InstanceData>>,
+    pub uniform_buffer: EngineBuffer,
+    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 impl VulkanEngine {
@@ -161,7 +154,7 @@ impl VulkanEngine {
             device.allocate_descriptor_sets(&descriptor_set_allocate_info)
         }?;
 
-        for (i, desc_set) in descriptor_sets.iter().enumerate() {
+        for (_, desc_set) in descriptor_sets.iter().enumerate() {
             let buffer_infos = [
                 vk::DescriptorBufferInfo {
                     buffer: uniform_buffer.buffer,
@@ -268,7 +261,7 @@ impl VulkanEngine {
 
     fn init_device_queues(
         instance: &Instance,
-        physical_device: PhysicalDevice,
+        physical_device: vk::PhysicalDevice,
         queue_families: &QueueFamilies,
         layer_names: &[&str],
     ) -> Result<(Device, Queues), vk::Result> {
@@ -322,9 +315,9 @@ impl VulkanEngine {
 
     fn init_render_pass(
         device: &Device,
-        physical_device: PhysicalDevice,
+        physical_device: vk::PhysicalDevice,
         surfaces: &EngineSurface
-    ) -> Result<RenderPass, vk::Result> {
+    ) -> Result<vk::RenderPass, vk::Result> {
         let attachments = [
             vk::AttachmentDescription::builder()
                 .format(
@@ -464,12 +457,12 @@ impl VulkanEngine {
         Ok(())
     }
 
-    fn fill_command_buffers(&self, models: &[Model<[f32; 3], InstanceData>]) {
+    fn fill_command_buffers(&self, models: &[Model<VertexData, InstanceData>]) {
         for (i, &command_buffer) in self.graphics_command_buffers.iter().enumerate() {
             let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
 
             unsafe {
-                self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info);
+                self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info).unwrap();
             }
 
             let clear_values = [
@@ -518,7 +511,7 @@ impl VulkanEngine {
 
                 self.device.cmd_end_render_pass(command_buffer);
 
-                self.device.end_command_buffer(command_buffer);
+                self.device.end_command_buffer(command_buffer).unwrap();
             }
         }
     }
@@ -528,6 +521,8 @@ impl Drop for VulkanEngine{
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().expect("Failed to wait?");
+
+            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
 
             self.uniform_buffer.cleanup(&mut self.allocator, &self.device);
 
@@ -567,6 +562,6 @@ impl Drop for VulkanEngine{
 }
 
 pub struct Queues {
-    pub graphics: Queue,
-    pub transfer: Queue,
+    pub graphics: vk::Queue,
+    pub transfer: vk::Queue,
 }

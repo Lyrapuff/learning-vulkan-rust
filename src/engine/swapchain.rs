@@ -31,7 +31,7 @@ impl EngineSwapchain {
         allocator: &mut Allocator
     ) -> Result<EngineSwapchain, vk::Result> {
         let surface_capabilities = surfaces.capabilities(physical_device)?;
-        let surface_present_modes = surfaces.present_modes(physical_device)?;
+        let _surface_present_modes = surfaces.present_modes(physical_device)?;
         let surface_formats = surfaces.formats(physical_device)?;
 
         let format = surface_formats[0];

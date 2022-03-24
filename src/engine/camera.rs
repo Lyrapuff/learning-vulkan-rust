@@ -1,7 +1,9 @@
 use ash::Device;
 use gpu_allocator::vulkan::Allocator;
-use nalgebra as na;
+
 use crate::engine::buffer::EngineBuffer;
+
+use nalgebra as na;
 
 pub struct Camera {
     view_matrix: na::Matrix4<f32>,
@@ -28,10 +30,17 @@ impl Camera {
         }
     }
 
-    pub fn update_buffer(&self, allocator: &mut Allocator, device: &Device, buffer: &mut EngineBuffer) {
+    pub fn update_buffer(
+        &self,
+        allocator: &mut Allocator,
+        device: &Device, buffer:
+        &mut EngineBuffer
+    ) -> Result<(), gpu_allocator::AllocationError> {
         let data: [[[f32; 4]; 4]; 2] = [self.view_matrix.into(), self.projection_matrix.into()];
 
-        buffer.fill(allocator, &device, &data);
+        buffer.fill(allocator, &device, &data)?;
+
+        Ok(())
     }
 
     pub fn update_view_matrix(&mut self) {
@@ -122,6 +131,7 @@ pub struct CameraBuilder {
     far: f32,
 }
 
+#[allow(dead_code)]
 impl CameraBuilder {
     pub fn position(mut self, pos: na::Vector3<f32>) -> CameraBuilder {
         self.position = pos;

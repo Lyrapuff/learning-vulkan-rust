@@ -12,11 +12,11 @@ impl EngineDebug {
         instance: &ash::Instance,
         callback: PFN_vkDebugUtilsMessengerCallbackEXT
     ) -> Result<EngineDebug, vk::Result> {
-        let mut debug_create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+        let debug_create_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
             .message_severity(
                 vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+//                    | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
                     | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
             )
             .message_type(

@@ -18,73 +18,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut engine = VulkanEngine::init(window)?;
 
-    let mut cube = Model::cube();
+    let mut model = Model::sphere(3);
 
-    cube.insert_visibly(InstanceData {
-        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, 0.1))
-            * na::Matrix4::new_scaling(0.1))
-            .into(),
-        color: [0.2, 0.4, 1.0],
-    });
-    cube.insert_visibly(InstanceData {
-        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.05, 0.05, 0.0))
-            * na::Matrix4::new_scaling(0.1))
-            .into(),
-        color: [1.0, 1.0, 0.2],
-    });
-    for i in 0..10 {
-        for j in 0..10 {
-            cube.insert_visibly(InstanceData {
-                model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(
-                    i as f32 * 0.2 - 1.0,
-                    j as f32 * 0.2 - 1.0,
-                    0.5,
-                )) * na::Matrix4::new_scaling(0.03))
-                    .into(),
-                color: [1.0, i as f32 * 0.07, j as f32 * 0.07],
-            });
-            cube.insert_visibly(InstanceData {
-                model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(
-                    i as f32 * 0.2 - 1.0,
-                    0.0,
-                    j as f32 * 0.2 - 1.0,
-                )) * na::Matrix4::new_scaling(0.02))
-                    .into(),
-                color: [i as f32 * 0.07, j as f32 * 0.07, 1.0],
-            });
-        }
-    }
-    cube.insert_visibly(InstanceData {
-        model_matrix: (na::Matrix4::from_scaled_axis(na::Vector3::new(0.0, 0.0, 1.4))
-            * na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.5, 0.0))
-            * na::Matrix4::new_scaling(0.1))
-            .into(),
-        color: [0.0, 0.5, 0.0],
-    });
-    cube.insert_visibly(InstanceData {
-        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.5, 0.0, 0.0))
-            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(0.5, 0.01, 0.01)))
-            .into(),
-        color: [1.0, 0.5, 0.5],
-    });
-    cube.insert_visibly(InstanceData {
-        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.5, 0.0))
-            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(0.01, 0.5, 0.01)))
-            .into(),
-        color: [0.5, 1.0, 0.5],
-    });
-    cube.insert_visibly(InstanceData {
-        model_matrix: (na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, 0.0))
-            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(0.01, 0.01, 0.5)))
-            .into(),
-        color: [0.5, 0.5, 1.0],
-    });
+    model.insert_visibly(InstanceData::from_matrix_and_color(
+        na::Matrix4::new_scaling(0.5),
+        [0.5, 0.0, 0.0],
+    ));
 
-    cube.update_vertex_buffer(&engine.device, &mut engine.allocator).unwrap();
-    cube.update_index_buffer(&engine.device, &mut engine.allocator).unwrap();
-    cube.update_instance_buffer(&engine.device, &mut engine.allocator).unwrap();
+    model.update_vertex_buffer(&engine.device, &mut engine.allocator).unwrap();
+    model.update_index_buffer(&engine.device, &mut engine.allocator).unwrap();
+    model.update_instance_buffer(&engine.device, &mut engine.allocator).unwrap();
 
-    let models = vec![cube];
+    let models = vec![model];
     engine.models = models;
 
     let mut camera = Camera::builder().build();
@@ -154,10 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &[engine.swapchain.may_begin_drawing[engine.swapchain.current_image]]
                     ).expect("Resetting fences");
 
-                    camera.update_buffer(&mut engine.allocator, &engine.device, &mut engine.uniform_buffer);
+                    camera.update_buffer(&mut engine.allocator, &engine.device, &mut engine.uniform_buffer).unwrap();
 
                     for m in &mut engine.models {
-                        m.update_instance_buffer(&engine.device, &mut engine.allocator);
+                        m.update_instance_buffer(&engine.device, &mut engine.allocator).unwrap();
                     }
 
                     engine.update_command_buffer(image_index as usize)
@@ -177,13 +122,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .build()
                     ];
 
-                    unsafe {
-                        engine.device.queue_submit(
-                            engine.queues.graphics,
-                            &submit_info,
-                            engine.swapchain.may_begin_drawing[engine.swapchain.current_image]
-                        ).expect("Queue submission");
-                    }
+                    engine.device.queue_submit(
+                        engine.queues.graphics,
+                        &submit_info,
+                        engine.swapchain.may_begin_drawing[engine.swapchain.current_image]
+                    ).expect("Queue submission");
 
                     let swapchains = [engine.swapchain.swapchain];
                     let indices = [image_index];
@@ -192,12 +135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .swapchains(&swapchains)
                         .image_indices(&indices);
 
-                    unsafe {
-                        engine.swapchain.loader.queue_present(
-                            engine.queues.graphics,
-                            &present_info
-                        ).expect("Queue presentation");
-                    }
+                    engine.swapchain.loader.queue_present(
+                        engine.queues.graphics,
+                        &present_info
+                    ).expect("Queue presentation");
                 }
             }
             _ => {}

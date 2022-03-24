@@ -6,6 +6,7 @@ pub struct EngineSurface {
     pub surface_loader: ash::extensions::khr::Surface,
 }
 
+#[allow(dead_code)]
 impl EngineSurface {
     pub fn init(
         window: &winit::window::Window,
