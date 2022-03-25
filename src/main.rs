@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     model.insert_visibly(InstanceData::from_matrix_and_color(
         na::Matrix4::new_scaling(0.5),
-        [0.5, 0.0, 0.0],
+        [0.955, 0.638, 0.538],
     ));
 
     model.update_vertex_buffer(&engine.device, &mut engine.allocator).unwrap();
