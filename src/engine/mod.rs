@@ -8,6 +8,7 @@ pub mod pools;
 pub mod model;
 
 pub mod camera;
+pub mod light;
 
 use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
@@ -63,7 +64,9 @@ pub struct VulkanEngine {
     pub models: Vec<Model<VertexData, InstanceData>>,
     pub uniform_buffer: EngineBuffer,
     pub descriptor_pool: vk::DescriptorPool,
-    pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub descriptor_sets_cam: Vec<vk::DescriptorSet>,
+    pub descriptor_sets_light: Vec<vk::DescriptorSet>,
+    pub light_buffer: EngineBuffer,
 }
 
 impl VulkanEngine {
@@ -132,49 +135,74 @@ impl VulkanEngine {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: swapchain.amount_of_images
-            }
+                descriptor_count: swapchain.amount_of_images,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: swapchain.amount_of_images,
+            },
         ];
-
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
-            .max_sets(swapchain.amount_of_images)
+            .max_sets(2 * swapchain.amount_of_images) //
             .pool_sizes(&pool_sizes);
+        let descriptor_pool =
+            unsafe { device.create_descriptor_pool(&descriptor_pool_info, None) }?;
 
-        let descriptor_pool = unsafe {
-            device.create_descriptor_pool(&descriptor_pool_info, None)
-        }?;
-
-        let desc_layouts = vec![pipeline.descriptor_set_layouts[0]; swapchain.amount_of_images as usize];
-
-        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::builder()
+        let desc_layouts_camera =
+            vec![pipeline.descriptor_set_layouts[0]; swapchain.amount_of_images as usize];
+        let descriptor_set_allocate_info_camera = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(descriptor_pool)
-            .set_layouts(&desc_layouts);
-
-        let descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(&descriptor_set_allocate_info)
+            .set_layouts(&desc_layouts_camera);
+        let descriptor_sets_camera = unsafe {
+            device.allocate_descriptor_sets(&descriptor_set_allocate_info_camera)
         }?;
 
-        for (_, desc_set) in descriptor_sets.iter().enumerate() {
-            let buffer_infos = [
-                vk::DescriptorBufferInfo {
-                    buffer: uniform_buffer.buffer,
-                    offset: 0,
-                    range: 128,
-                }
-            ];
+        for descset in &descriptor_sets_camera {
+            let buffer_infos = [vk::DescriptorBufferInfo {
+                buffer: uniform_buffer.buffer,
+                offset: 0,
+                range: 128,
+            }];
+            let desc_sets_write = [vk::WriteDescriptorSet::builder()
+                .dst_set(*descset)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&buffer_infos)
+                .build()];
+            unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
+        }
+        let desc_layouts_light =
+            vec![pipeline.descriptor_set_layouts[1]; swapchain.amount_of_images as usize];
+        let descriptor_set_allocate_info_light = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&desc_layouts_light);
+        let descriptor_sets_light = unsafe {
+            device.allocate_descriptor_sets(&descriptor_set_allocate_info_light)
+        }?;
 
-            let desc_sets_write = [
-                vk::WriteDescriptorSet::builder()
-                    .dst_set(*desc_set)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&buffer_infos)
-                    .build()
-            ];
+        let mut light_buffer = EngineBuffer::new(
+            &mut allocator,
+            &device,
+            8,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+        ).unwrap();
 
-            unsafe {
-                device.update_descriptor_sets(&desc_sets_write, &[]);
-            };
+        light_buffer.fill(&mut allocator, &device, &[0., 0.]).unwrap();
+
+        for descset in &descriptor_sets_light {
+            let buffer_infos = [vk::DescriptorBufferInfo {
+                buffer: light_buffer.buffer,
+                offset: 0,
+                range: 8,
+            }];
+            let desc_sets_write = [vk::WriteDescriptorSet::builder()
+                .dst_set(*descset)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&buffer_infos)
+                .build()];
+            unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
         }
 
         let engine = VulkanEngine {
@@ -197,7 +225,9 @@ impl VulkanEngine {
             models: vec![],
             uniform_buffer,
             descriptor_pool,
-            descriptor_sets,
+            descriptor_sets_cam: descriptor_sets_camera,
+            descriptor_sets_light: descriptor_sets_light,
+            light_buffer,
         };
 
         engine.fill_command_buffers(&engine.models);
@@ -442,7 +472,10 @@ impl VulkanEngine {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline.layout,
                 0,
-                &[self.descriptor_sets[index]],
+                &[
+                    self.descriptor_sets_cam[index],
+                    self.descriptor_sets_light[index]
+                ],
                 &[],
             );
 
@@ -521,6 +554,8 @@ impl Drop for VulkanEngine{
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().expect("Failed to wait?");
+
+            self.light_buffer.cleanup(&mut self.allocator, &self.device);
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, None);
 

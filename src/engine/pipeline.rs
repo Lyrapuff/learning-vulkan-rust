@@ -46,7 +46,7 @@ impl EnginePipeline {
 
         // Creating descriptor sets
 
-        let descriptor_set_layout_binding_descs = [
+        let descriptor_set_layout_binding_descs_cam = [
             vk::DescriptorSetLayoutBinding::builder()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
@@ -55,14 +55,30 @@ impl EnginePipeline {
                 .build()
         ];
 
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&descriptor_set_layout_binding_descs);
+        let descriptor_set_layout_info_cam = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&descriptor_set_layout_binding_descs_cam);
 
-        let descriptor_set_layout = unsafe {
-            device.create_descriptor_set_layout(&descriptor_set_layout_info, None)
+        let descriptor_set_layout_cam = unsafe {
+            device.create_descriptor_set_layout(&descriptor_set_layout_info_cam, None)
         }?;
 
-        let desc_layouts = vec![descriptor_set_layout];
+        let descriptor_set_layout_binding_descs_light = [
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .build()
+        ];
+
+        let descriptor_set_layout_info_light = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&descriptor_set_layout_binding_descs_light);
+
+        let descriptor_set_layout_light = unsafe {
+            device.create_descriptor_set_layout(&descriptor_set_layout_info_light, None)
+        }?;
+
+        let desc_layouts = vec![descriptor_set_layout_cam, descriptor_set_layout_light];
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder()
             .set_layouts(&desc_layouts);
@@ -134,6 +150,18 @@ impl EnginePipeline {
                 offset: 128,
                 format: vk::Format::R32G32B32_SFLOAT,
             },
+            vk::VertexInputAttributeDescription {
+                binding: 1,
+                location: 11,
+                offset: 140,
+                format: vk::Format::R32_SFLOAT,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 1,
+                location: 12,
+                offset: 144,
+                format: vk::Format::R32_SFLOAT,
+            },
         ];
 
         let vertex_binding_descs = [
@@ -144,7 +172,7 @@ impl EnginePipeline {
             },
             vk::VertexInputBindingDescription {
                 binding: 1,
-                stride: 140,
+                stride: 148,
                 input_rate: vk::VertexInputRate::INSTANCE,
             },
         ];

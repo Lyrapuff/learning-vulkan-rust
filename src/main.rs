@@ -9,6 +9,7 @@ use winit::window::Window;
 use crate::engine::camera::Camera;
 use crate::engine::model::{InstanceData, Model};
 use crate::engine::VulkanEngine;
+use crate::engine::light::{DirectionalLight, LightManager, PointLight};
 
 use nalgebra as na;
 
@@ -20,10 +21,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut model = Model::sphere(3);
 
-    model.insert_visibly(InstanceData::from_matrix_and_color(
-        na::Matrix4::new_scaling(0.5),
-        [0.955, 0.638, 0.538],
-    ));
+    for i in 0..10 {
+        for j in 0..10 {
+            model.insert_visibly(InstanceData::from_props(
+                na::Matrix4::new_translation(&na::Vector3::new(i as f32 - 5., j as f32 + 5., 10.0))
+                    * na::Matrix4::new_scaling(0.5),
+                [0., 0., 0.8],
+                i as f32 * 0.1,
+                j as f32 * 0.1,
+            ));
+        }
+    }
 
     model.update_vertex_buffer(&engine.device, &mut engine.allocator).unwrap();
     model.update_index_buffer(&engine.device, &mut engine.allocator).unwrap();
@@ -32,7 +40,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let models = vec![model];
     engine.models = models;
 
-    let mut camera = Camera::builder().build();
+    let mut lights = LightManager::default();
+
+    lights.add_light(DirectionalLight {
+        direction: na::Vector3::new(-1., -1., 0.),
+        illuminance: [10.1, 10.1, 10.1],
+    });
+    lights.add_light(PointLight {
+        position: na::Point3::new(0.1, -3.0, -3.0),
+        luminous_flux: [100.0, 100.0, 100.0],
+    });
+    lights.add_light(PointLight {
+        position: na::Point3::new(0.1, -3.0, -3.0),
+        luminous_flux: [100.0, 100.0, 100.0],
+    });
+    lights.add_light(PointLight {
+        position: na::Point3::new(0.1, -3.0, -3.0),
+        luminous_flux: [100.0, 100.0, 100.0],
+    });
+
+    lights.update_buffer(&engine.device, &mut engine.allocator, &mut engine.light_buffer, &mut engine.descriptor_sets_light).unwrap();
+
+    let mut camera = Camera::builder()
+        .position(na::Vector3::new(0.0, 0.0, -5.0))
+        .build();
 
     event_loop.run(move |event, _, control_flow| {
         match event {
