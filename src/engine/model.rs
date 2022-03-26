@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use gpu_allocator::vulkan::Allocator;
 use super::buffer::EngineBuffer;
 use ash::vk;
+use crate::engine::allocator::VkAllocator;
 use crate::na;
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,57 @@ impl std::fmt::Display for InvalidHandle {
 impl std::error::Error for InvalidHandle {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         None
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct TexturedVertexData {
+    pub position: [f32; 3],
+}
+
+#[repr(C)]
+pub struct TexturedInstanceData {
+    pub model_matrix: [[f32; 4]; 4],
+    pub inverse_model_matrix: [[f32; 4]; 4],
+}
+
+impl TexturedInstanceData {
+    pub fn from_matrix(model_matrix: na::Matrix4<f32>) -> TexturedInstanceData {
+        TexturedInstanceData {
+            model_matrix: model_matrix.into(),
+            inverse_model_matrix: model_matrix.try_inverse().unwrap().into(),
+        }
+    }
+}
+
+impl Model<TexturedVertexData, TexturedInstanceData> {
+    pub fn quad() -> Self {
+        let lb = TexturedVertexData {
+            position: [-1.0, 1.0, 0.0],
+        }; //lb: left-bottom
+        let lt = TexturedVertexData {
+            position: [-1.0, -1.0, 0.0],
+        };
+        let rb = TexturedVertexData {
+            position: [1.0, 1.0, 0.0],
+        };
+        let rt = TexturedVertexData {
+            position: [1.0, -1.0, 0.0],
+        };
+
+        Model {
+            vertex_data: vec![lb, lt, rb, rt],
+            index_data: vec![0, 2, 1, 1, 2, 3],
+            handle_to_index: std::collections::HashMap::new(),
+            handles: Vec::new(),
+            instances: Vec::new(),
+            first_invisible: 0,
+            next_handle: 0,
+            vertex_buffer: None,
+            index_buffer: None,
+            instance_buffer: None,
+        }
     }
 }
 
@@ -212,23 +264,21 @@ impl<V, I> Model<V, I> {
 
     pub fn update_vertex_buffer(
         &mut self,
-        device: &ash::Device,
-        allocator: &mut Allocator
+        allocator: &mut VkAllocator
     ) -> Result<(), gpu_allocator::AllocationError> {
         if let Some(buffer) = &mut self.vertex_buffer {
-            buffer.fill(allocator, device, &self.vertex_data)?;
+            buffer.fill(allocator, &self.vertex_data)?;
             Ok(())
         } else {
             let bytes = (self.vertex_data.len() * std::mem::size_of::<V>()) as u64;
             let mut buffer = EngineBuffer::new(
                 allocator,
-                device,
                 bytes,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 gpu_allocator::MemoryLocation::CpuToGpu,
             )?;
 
-            buffer.fill(allocator, device, &self.vertex_data)?;
+            buffer.fill(allocator, &self.vertex_data)?;
             self.vertex_buffer = Some(buffer);
 
             Ok(())
@@ -237,44 +287,44 @@ impl<V, I> Model<V, I> {
 
     pub fn update_index_buffer(
         &mut self,
-        device: &ash::Device,
-        allocator: &mut Allocator
+        allocator: &mut VkAllocator
     ) -> Result<(), gpu_allocator::AllocationError> {
         if let Some(buffer) = &mut self.index_buffer {
-            buffer.fill(allocator, device, &self.index_data)?;
+            buffer.fill(allocator, &self.index_data)?;
             Ok(())
         } else {
             let bytes = (self.index_data.len() * std::mem::size_of::<u32>()) as u64;
             let mut buffer = EngineBuffer::new(
                 allocator,
-                device,
                 bytes,
                 vk::BufferUsageFlags::INDEX_BUFFER,
                 gpu_allocator::MemoryLocation::CpuToGpu,
             )?;
 
-            buffer.fill(allocator, device, &self.index_data)?;
+            buffer.fill(allocator, &self.index_data)?;
             self.index_buffer = Some(buffer);
 
             Ok(())
         }
     }
 
-    pub fn update_instance_buffer(&mut self, device: &ash::Device, allocator: &mut Allocator) -> Result<(), gpu_allocator::AllocationError> {
+    pub fn update_instance_buffer(
+        &mut self,
+        allocator: &mut VkAllocator
+    ) -> Result<(), gpu_allocator::AllocationError> {
         if let Some(buffer) = &mut self.instance_buffer {
-            buffer.fill(allocator, device, &self.instances[0..self.first_invisible])?;
+            buffer.fill(allocator, &self.instances[0..self.first_invisible])?;
             Ok(())
         } else {
             let bytes = (self.first_invisible * std::mem::size_of::<I>()) as u64;
             let mut buffer = EngineBuffer::new(
                 allocator,
-                device,
                 bytes,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 gpu_allocator::MemoryLocation::CpuToGpu,
             )?;
 
-            buffer.fill(allocator, device, &self.instances[0..self.first_invisible])?;
+            buffer.fill(allocator, &self.instances[0..self.first_invisible])?;
             self.instance_buffer = Some(buffer);
 
             Ok(())

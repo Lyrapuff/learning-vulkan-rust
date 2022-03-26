@@ -7,7 +7,7 @@ use winit::event_loop::EventLoop;
 use winit::window::Window;
 
 use crate::engine::camera::Camera;
-use crate::engine::model::{InstanceData, Model};
+use crate::engine::model::{InstanceData, Model, TexturedInstanceData};
 use crate::engine::VulkanEngine;
 use crate::engine::light::{DirectionalLight, LightManager, PointLight};
 
@@ -19,26 +19,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut engine = VulkanEngine::init(window)?;
 
-    let mut model = Model::sphere(3);
+    let mut model = Model::quad();
 
-    for i in 0..10 {
-        for j in 0..10 {
-            model.insert_visibly(InstanceData::from_props(
-                na::Matrix4::new_translation(&na::Vector3::new(i as f32 - 5., j as f32 + 5., 10.0))
-                    * na::Matrix4::new_scaling(0.5),
-                [0., 0., 0.8],
-                i as f32 * 0.1,
-                j as f32 * 0.1,
-            ));
-        }
-    }
+    model.insert_visibly(TexturedInstanceData::from_matrix(
+        na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, 0.0))
+            * na::Matrix4::new_scaling(0.5)
+    ));
 
-    model.update_vertex_buffer(&engine.device, &mut engine.allocator).unwrap();
-    model.update_index_buffer(&engine.device, &mut engine.allocator).unwrap();
-    model.update_instance_buffer(&engine.device, &mut engine.allocator).unwrap();
+    model.update_vertex_buffer(&mut engine.allocator).unwrap();
+    model.update_index_buffer(&mut engine.allocator).unwrap();
+    model.update_instance_buffer( &mut engine.allocator).unwrap();
 
     let models = vec![model];
     engine.models = models;
+
+    /*
 
     let mut lights = LightManager::default();
 
@@ -60,6 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     lights.update_buffer(&engine.device, &mut engine.allocator, &mut engine.light_buffer, &mut engine.descriptor_sets_light).unwrap();
+
+    */
 
     let mut camera = Camera::builder()
         .position(na::Vector3::new(0.0, 0.0, -5.0))
@@ -130,10 +127,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &[engine.swapchain.may_begin_drawing[engine.swapchain.current_image]]
                     ).expect("Resetting fences");
 
-                    camera.update_buffer(&mut engine.allocator, &engine.device, &mut engine.uniform_buffer).unwrap();
+                    camera.update_buffer(&mut engine.allocator, &mut engine.uniform_buffer).unwrap();
 
                     for m in &mut engine.models {
-                        m.update_instance_buffer(&engine.device, &mut engine.allocator).unwrap();
+                        m.update_instance_buffer( &mut engine.allocator).unwrap();
                     }
 
                     engine.update_command_buffer(image_index as usize)
@@ -166,10 +163,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .swapchains(&swapchains)
                         .image_indices(&indices);
 
-                    engine.swapchain.loader.queue_present(
+                    let res = engine.swapchain.loader.queue_present(
                         engine.queues.graphics,
                         &present_info
-                    ).expect("Queue presentation");
+                    );
+
+                    match res {
+                        Ok(..) => {}
+                        Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                            engine.recreate_swapchain()
+                                .expect("Failed to recreate swapchain");
+
+                            camera.set_aspect(
+                                engine.swapchain.extent.width as f32 /
+                                    engine.swapchain.extent.height as f32
+                            );
+
+                            camera.update_buffer(&mut engine.allocator, &mut engine.uniform_buffer)
+                                .expect("Failed to update Camera Uniform Buffer");
+                        }
+                        _ => {
+                            panic!("Unhandled queue presentation error");
+                        }
+                    }
                 }
             }
             _ => {}

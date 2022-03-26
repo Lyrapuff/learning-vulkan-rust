@@ -1,6 +1,7 @@
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use nalgebra as na;
+use crate::engine::allocator::VkAllocator;
 use crate::engine::buffer::EngineBuffer;
 
 pub struct DirectionalLight {
@@ -61,7 +62,7 @@ impl LightManager {
     pub fn update_buffer(
         &self,
         device: &ash::Device,
-        allocator: &mut Allocator,
+        allocator: &mut VkAllocator,
         buffer: &mut EngineBuffer,
         descriptor_sets_light: &mut [vk::DescriptorSet],
     ) -> Result<(), gpu_allocator::AllocationError> {
@@ -96,7 +97,7 @@ impl LightManager {
 
         let old_size = buffer.size_in_bytes;
 
-        buffer.fill(allocator, &device, &data)?;
+        buffer.fill(allocator, &data)?;
 
         if old_size != buffer.size_in_bytes {
             for desc_set in descriptor_sets_light {

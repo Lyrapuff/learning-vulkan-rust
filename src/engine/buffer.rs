@@ -1,5 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
+use crate::engine::allocator::VkAllocator;
 
 pub struct EngineBuffer {
     pub buffer: vk::Buffer,
@@ -11,8 +12,7 @@ pub struct EngineBuffer {
 
 impl EngineBuffer {
     pub fn new(
-        allocator: &mut Allocator,
-        device: &ash::Device,
+        allocator: &mut VkAllocator,
         size_in_bytes: u64,
         usage: vk::BufferUsageFlags,
         memory_usage: gpu_allocator::MemoryLocation
@@ -21,26 +21,11 @@ impl EngineBuffer {
             .size(size_in_bytes)
             .usage(usage);
 
-        let buffer = unsafe {
-            device.create_buffer(&buffer_info, None).unwrap()
-        };
-
-        let requirements = unsafe {
-            device.get_buffer_memory_requirements(buffer)
-        };
-
-        let allocation = allocator.allocate(
-            &AllocationCreateDesc {
-                name: "Vertex Buffer",
-                requirements,
-                location: memory_usage,
-                linear: true
-            }
+        let (buffer, allocation) = allocator.allocate_buffer(
+            &buffer_info,
+            memory_usage,
+            true
         ).unwrap();
-
-        unsafe {
-            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()).unwrap();
-        }
 
         Ok(EngineBuffer {
             buffer,
@@ -53,21 +38,18 @@ impl EngineBuffer {
 
     pub fn fill<T: Sized>(
         &mut self,
-        allocator: &mut Allocator,
-        device: &ash::Device,
+        allocator: &mut VkAllocator,
         data: &[T],
     ) -> Result<(), gpu_allocator::AllocationError> {
         let bytes_to_write = (data.len() * std::mem::size_of::<T>()) as u64;
 
         if bytes_to_write > self.size_in_bytes {
             unsafe {
-                allocator.free(self.allocation.take().unwrap()).unwrap();
-                device.destroy_buffer(self.buffer, None);
+                self.cleanup(allocator);
             }
 
             let new_buffer = EngineBuffer::new(
                 allocator,
-                device,
                 bytes_to_write,
                 self.usage,
                 self.memory_usage
@@ -89,10 +71,9 @@ impl EngineBuffer {
 
     pub unsafe fn cleanup(
         &mut self,
-        allocator: &mut Allocator,
-        device: &ash::Device,
+        allocator: &mut VkAllocator,
     ) {
-        allocator.free(self.allocation.take().unwrap()).unwrap();
-        device.destroy_buffer(self.buffer, None);
+        let destroyer = |device: &ash::Device| device.destroy_buffer(self.buffer, None);
+        allocator.free(self.allocation.take().unwrap(), &destroyer);
     }
 }

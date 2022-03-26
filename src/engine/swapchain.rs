@@ -1,5 +1,7 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
+use winit::window::CursorIcon::Default;
+use crate::engine::allocator::VkAllocator;
 use super::surface::EngineSurface;
 use super::queue_families::QueueFamilies;
 
@@ -18,7 +20,7 @@ pub struct EngineSwapchain {
     pub rendering_finished: Vec<vk::Semaphore>,
     pub may_begin_drawing: Vec<vk::Fence>,
     pub amount_of_images: u32,
-    pub  current_image: usize,
+    pub current_image: usize,
 }
 
 impl EngineSwapchain {
@@ -28,7 +30,7 @@ impl EngineSwapchain {
         device: &ash::Device,
         surfaces: &EngineSurface,
         queue_families: &QueueFamilies,
-        allocator: &mut Allocator
+        allocator: &mut VkAllocator
     ) -> Result<EngineSwapchain, vk::Result> {
         let surface_capabilities = surfaces.capabilities(physical_device)?;
         let _surface_present_modes = surfaces.present_modes(physical_device)?;
@@ -59,24 +61,11 @@ impl EngineSwapchain {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .queue_family_indices(&queue_families);
 
-        let depth_image = unsafe {
-            device.create_image(&depth_image_info, None)?
-        };
-
-        let requirements = unsafe {
-            device.get_image_memory_requirements(depth_image)
-        };
-
-        let allocation = allocator.allocate(&AllocationCreateDesc {
-            name: "Depth Texture",
-            requirements,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
-            linear: false,
-        }).unwrap();
-
-        unsafe {
-            device.bind_image_memory(depth_image, allocation.memory(), allocation.offset())
-        }?;
+        let (depth_image, allocation) = allocator.allocate_image(
+            &depth_image_info,
+            gpu_allocator::MemoryLocation::GpuOnly,
+            false,
+        ).unwrap();
 
         let subresource_range = vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::DEPTH)

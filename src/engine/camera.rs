@@ -4,6 +4,7 @@ use gpu_allocator::vulkan::Allocator;
 use crate::engine::buffer::EngineBuffer;
 
 use nalgebra as na;
+use crate::engine::allocator::VkAllocator;
 
 pub struct Camera {
     view_matrix: na::Matrix4<f32>,
@@ -32,13 +33,12 @@ impl Camera {
 
     pub fn update_buffer(
         &self,
-        allocator: &mut Allocator,
-        device: &Device, buffer:
-        &mut EngineBuffer
+        allocator: &mut VkAllocator,
+        buffer: &mut EngineBuffer
     ) -> Result<(), gpu_allocator::AllocationError> {
         let data: [[[f32; 4]; 4]; 2] = [self.view_matrix.into(), self.projection_matrix.into()];
 
-        buffer.fill(allocator, &device, &data)?;
+        buffer.fill(allocator,  &data)?;
 
         Ok(())
     }
@@ -118,6 +118,11 @@ impl Camera {
 
     pub fn turn_down(&mut self, angle: f32) {
         self.turn_up(-angle);
+    }
+
+    pub fn set_aspect(&mut self, aspect: f32) {
+        self.aspect = aspect;
+        self.update_projection_matrix();
     }
 }
 

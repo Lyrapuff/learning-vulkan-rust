@@ -9,6 +9,8 @@ pub mod model;
 
 pub mod camera;
 pub mod light;
+pub mod texture;
+pub mod allocator;
 
 use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
@@ -19,10 +21,11 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::window::Window;
 
 use nalgebra as na;
+use crate::engine::allocator::VkAllocator;
 
 use crate::engine::buffer::EngineBuffer;
 use crate::engine::debug::EngineDebug;
-use crate::engine::model::{InstanceData, Model, VertexData};
+use crate::engine::model::{InstanceData, Model, TexturedInstanceData, TexturedVertexData, VertexData};
 use crate::engine::pipeline::EnginePipeline;
 use crate::engine::pools::Pools;
 use crate::engine::queue_families::QueueFamilies;
@@ -60,13 +63,13 @@ pub struct VulkanEngine {
     pub pipeline: EnginePipeline,
     pub pools: Pools,
     pub graphics_command_buffers: Vec<vk::CommandBuffer>,
-    pub allocator: ManuallyDrop<Allocator>,
-    pub models: Vec<Model<VertexData, InstanceData>>,
+    pub allocator: VkAllocator,
+    pub models: Vec<Model<TexturedVertexData, TexturedInstanceData>>,
     pub uniform_buffer: EngineBuffer,
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_sets_cam: Vec<vk::DescriptorSet>,
     pub descriptor_sets_light: Vec<vk::DescriptorSet>,
-    pub light_buffer: EngineBuffer,
+    //pub light_buffer: EngineBuffer,
 }
 
 impl VulkanEngine {
@@ -87,7 +90,7 @@ impl VulkanEngine {
 
         let (device, queues) = Self::init_device_queues(&instance, physical_device, &queue_families, &layer_names)?;
 
-        let mut allocator = Allocator::new(
+        let mut allocator = VkAllocator::new(
             &AllocatorCreateDesc {
                 instance: instance.clone(),
                 device: device.clone(),
@@ -95,7 +98,7 @@ impl VulkanEngine {
                 debug_settings: Default::default(),
                 buffer_device_address: false
             }
-        ).unwrap();
+        );
 
         let mut swapchain = EngineSwapchain::init(
             &instance,
@@ -110,14 +113,13 @@ impl VulkanEngine {
 
         swapchain.create_framebuffers(&device, render_pass)?;
 
-        let pipeline = EnginePipeline::init(&device, &swapchain, render_pass)?;
+        let pipeline = EnginePipeline::init_textured(&device, &swapchain, render_pass)?;
 
         let pools = Pools::init(&device, &queue_families)?;
         let command_buffers = pools.create_command_buffers(&device, swapchain.framebuffers.len())?;
 
         let mut uniform_buffer = EngineBuffer::new(
             &mut allocator,
-            &device,
             128,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             gpu_allocator::MemoryLocation::CpuToGpu
@@ -128,7 +130,7 @@ impl VulkanEngine {
             na::Matrix4::identity().into(),
         ];
 
-        uniform_buffer.fill(&mut allocator, &device, &camera_transforms).unwrap();
+        uniform_buffer.fill(&mut allocator, &camera_transforms).unwrap();
 
         // Descriptor pool
 
@@ -171,6 +173,8 @@ impl VulkanEngine {
                 .build()];
             unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
         }
+
+        /*
         let desc_layouts_light =
             vec![pipeline.descriptor_set_layouts[1]; swapchain.amount_of_images as usize];
         let descriptor_set_allocate_info_light = vk::DescriptorSetAllocateInfo::builder()
@@ -204,6 +208,7 @@ impl VulkanEngine {
                 .build()];
             unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
         }
+        */
 
         let engine = VulkanEngine {
             window,
@@ -221,13 +226,13 @@ impl VulkanEngine {
             pipeline,
             pools,
             graphics_command_buffers: command_buffers,
-            allocator: ManuallyDrop::new(allocator),
+            allocator: allocator,
             models: vec![],
             uniform_buffer,
             descriptor_pool,
             descriptor_sets_cam: descriptor_sets_camera,
-            descriptor_sets_light: descriptor_sets_light,
-            light_buffer,
+            descriptor_sets_light: vec![],
+            //light_buffer,
         };
 
         engine.fill_command_buffers(&engine.models);
@@ -341,6 +346,36 @@ impl VulkanEngine {
             graphics: graphics_queue,
             transfer: transfer_queue
         }))
+    }
+
+    pub fn recreate_swapchain(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            self.device.device_wait_idle()
+                .expect("Failed to wait_idle");
+
+            self.swapchain.cleanup(&self.device);
+        }
+
+        self.swapchain = EngineSwapchain::init(
+            &self.instance,
+            self.physical_device,
+            &self.device,
+            &self.surfaces,
+            &self.queue_families,
+            &mut self.allocator,
+        )?;
+
+        self.swapchain.create_framebuffers(&self.device, self.render_pass)?;
+
+        self.pipeline.cleanup(&self.device);
+
+        self.pipeline = EnginePipeline::init(
+            &self.device,
+            &self.swapchain,
+            self.render_pass
+        )?;
+
+        Ok(())
     }
 
     fn init_render_pass(
@@ -474,7 +509,7 @@ impl VulkanEngine {
                 0,
                 &[
                     self.descriptor_sets_cam[index],
-                    self.descriptor_sets_light[index]
+//                  self.descriptor_sets_light[index]
                 ],
                 &[],
             );
@@ -490,7 +525,7 @@ impl VulkanEngine {
         Ok(())
     }
 
-    fn fill_command_buffers(&self, models: &[Model<VertexData, InstanceData>]) {
+    fn fill_command_buffers(&self, models: &[Model<TexturedVertexData, TexturedInstanceData>]) {
         for (i, &command_buffer) in self.graphics_command_buffers.iter().enumerate() {
             let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
 
@@ -555,27 +590,27 @@ impl Drop for VulkanEngine{
         unsafe {
             self.device.device_wait_idle().expect("Failed to wait?");
 
-            self.light_buffer.cleanup(&mut self.allocator, &self.device);
+            //self.light_buffer.cleanup(&mut self.allocator, &self.device);
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, None);
 
-            self.uniform_buffer.cleanup(&mut self.allocator, &self.device);
+            self.uniform_buffer.cleanup(&mut self.allocator);
 
             for m in &mut self.models {
                 if let Some(vb) = &mut m.vertex_buffer {
-                    vb.cleanup(&mut self.allocator, &self.device);
+                    vb.cleanup(&mut self.allocator);
                 }
 
                 if let Some(ib) = &mut m.index_buffer {
-                    ib.cleanup(&mut self.allocator, &self.device);
+                    ib.cleanup(&mut self.allocator);
                 }
 
                 if let Some(ib) = &mut m.instance_buffer {
-                    ib.cleanup(&mut self.allocator, &self.device);
+                    ib.cleanup(&mut self.allocator);
                 }
             }
 
-            ManuallyDrop::drop(&mut self.allocator);
+            self.allocator.cleanup();
 
             self.pools.cleanup(&self.device);
 
