@@ -333,23 +333,23 @@ impl EnginePipeline {
             device.create_descriptor_set_layout(&descriptor_set_layout_info_cam, None)
         }?;
 
-        let descriptor_set_layout_binding_descs_light = [
+        let descriptor_set_layout_binding_descs_img = [
             vk::DescriptorSetLayoutBinding::builder()
                 .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)
                 .build()
         ];
 
-        let descriptor_set_layout_info_light = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&descriptor_set_layout_binding_descs_light);
+        let descriptor_set_layout_info_img = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&descriptor_set_layout_binding_descs_img);
 
-        let descriptor_set_layout_light = unsafe {
-            device.create_descriptor_set_layout(&descriptor_set_layout_info_light, None)
+        let descriptor_set_layout_img = unsafe {
+            device.create_descriptor_set_layout(&descriptor_set_layout_info_img, None)
         }?;
 
-        let desc_layouts = vec![descriptor_set_layout_cam, descriptor_set_layout_light];
+        let desc_layouts = vec![descriptor_set_layout_cam, descriptor_set_layout_img];
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder()
             .set_layouts(&desc_layouts);
@@ -362,59 +362,65 @@ impl EnginePipeline {
                 format: vk::Format::R32G32B32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
-                binding: 1,
+                binding: 0,
                 location: 1,
+                offset: 12,
+                format: vk::Format::R32G32_SFLOAT,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 1,
+                location: 2,
                 offset: 0,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 2,
+                location: 3,
                 offset: 16,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 3,
+                location: 4,
                 offset: 32,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 4,
+                location: 5,
                 offset: 48,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 5,
+                location: 6,
                 offset: 64,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 6,
+                location: 7,
                 offset: 80,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 7,
+                location: 8,
                 offset: 96,
                 format: vk::Format::R32G32B32A32_SFLOAT,
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
-                location: 8,
+                location: 9,
                 offset: 112,
                 format: vk::Format::R32G32B32A32_SFLOAT,
-            }
+            },
         ];
 
         let vertex_binding_descs = [
             vk::VertexInputBindingDescription {
                 binding: 0,
-                stride: 12,
+                stride: 20,
                 input_rate: vk::VertexInputRate::VERTEX,
             },
             vk::VertexInputBindingDescription {

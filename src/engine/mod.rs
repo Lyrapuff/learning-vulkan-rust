@@ -69,6 +69,7 @@ pub struct VulkanEngine {
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_sets_cam: Vec<vk::DescriptorSet>,
     pub descriptor_sets_light: Vec<vk::DescriptorSet>,
+    pub descriptor_sets_texture: Vec<vk::DescriptorSet>,
     //pub light_buffer: EngineBuffer,
 }
 
@@ -140,7 +141,7 @@ impl VulkanEngine {
                 descriptor_count: swapchain.amount_of_images,
             },
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
+                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 descriptor_count: swapchain.amount_of_images,
             },
         ];
@@ -171,6 +172,7 @@ impl VulkanEngine {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&buffer_infos)
                 .build()];
+
             unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
         }
 
@@ -210,6 +212,15 @@ impl VulkanEngine {
         }
         */
 
+        let desc_layouts_texture =
+            vec![pipeline.descriptor_set_layouts[1]; swapchain.amount_of_images as usize];
+        let descriptor_set_allocate_info_texture = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&desc_layouts_texture);
+        let descriptor_sets_texture = unsafe {
+            device.allocate_descriptor_sets(&descriptor_set_allocate_info_texture)
+        }?;
+
         let engine = VulkanEngine {
             window,
             entry,
@@ -232,6 +243,7 @@ impl VulkanEngine {
             descriptor_pool,
             descriptor_sets_cam: descriptor_sets_camera,
             descriptor_sets_light: vec![],
+            descriptor_sets_texture,
             //light_buffer,
         };
 
@@ -369,7 +381,7 @@ impl VulkanEngine {
 
         self.pipeline.cleanup(&self.device);
 
-        self.pipeline = EnginePipeline::init(
+        self.pipeline = EnginePipeline::init_textured(
             &self.device,
             &self.swapchain,
             self.render_pass
@@ -509,6 +521,7 @@ impl VulkanEngine {
                 0,
                 &[
                     self.descriptor_sets_cam[index],
+                    self.descriptor_sets_texture[index],
 //                  self.descriptor_sets_light[index]
                 ],
                 &[],

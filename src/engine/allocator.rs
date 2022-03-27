@@ -23,6 +23,7 @@ impl VkAllocator {
         self.allocator.allocate(info)
     }
 
+    // Maybe create fns like free_image and free_buffer for convenience
     pub fn free(
         &mut self,
         allocation: Allocation,

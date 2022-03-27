@@ -12,6 +12,8 @@ use crate::engine::VulkanEngine;
 use crate::engine::light::{DirectionalLight, LightManager, PointLight};
 
 use nalgebra as na;
+use crate::engine::buffer::EngineBuffer;
+use crate::engine::texture::Texture;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new();
@@ -21,9 +23,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut model = Model::quad();
 
+    let texture = Texture::from_file("assets/Picture.png", &engine.device, &mut engine.allocator);
+    let aspect = texture.width as f32 / texture.height as f32;
+
     model.insert_visibly(TexturedInstanceData::from_matrix(
         na::Matrix4::new_translation(&na::Vector3::new(0.0, 0.0, 0.0))
-            * na::Matrix4::new_scaling(0.5)
+            * na::Matrix4::new_nonuniform_scaling(&na::Vector3::new(1.0 * aspect, 1.0, 1.0))
     ));
 
     model.update_vertex_buffer(&mut engine.allocator).unwrap();
@@ -61,6 +66,152 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut camera = Camera::builder()
         .position(na::Vector3::new(0.0, 0.0, -5.0))
         .build();
+
+    // Maybe create an associated function for that
+    let data = texture.image.clone().into_raw();
+
+    let mut buffer = EngineBuffer::new(
+        &mut engine.allocator,
+        data.len() as u64,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        gpu_allocator::MemoryLocation::CpuToGpu,
+    )?;
+
+    buffer.fill(&mut engine.allocator, &data);
+    // ^
+
+    let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
+        .command_pool(engine.pools.command_pool_graphics)
+        .command_buffer_count(1);
+
+    let copy_command_buffer = unsafe {
+        engine.device.allocate_command_buffers(&command_buffer_allocate_info)
+    }.unwrap()[0];
+
+    let cmd_begin_info = vk::CommandBufferBeginInfo::builder()
+        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+    unsafe {
+        engine.device.begin_command_buffer(copy_command_buffer, &cmd_begin_info)
+    }?;
+
+    let barrier = vk::ImageMemoryBarrier::builder()
+        .image(texture.vk_image)
+        .src_access_mask(vk::AccessFlags::empty())
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .build();
+
+    unsafe {
+        engine.device.cmd_pipeline_barrier(
+            copy_command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
+    }
+
+    let image_subresource = vk::ImageSubresourceLayers {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        mip_level: 0,
+        base_array_layer: 0,
+        layer_count: 1
+    };
+
+    let region = vk::BufferImageCopy {
+        buffer_offset: 0,
+        buffer_row_length: 0,
+        buffer_image_height: 0,
+        image_offset: vk::Offset3D { x: 0, y: 0, z: 0},
+        image_extent: vk::Extent3D {
+            width: texture.width,
+            height: texture.height,
+            depth: 1
+        },
+        image_subresource,
+        ..Default::default()
+    };
+
+    unsafe {
+        engine.device.cmd_copy_buffer_to_image(
+            copy_command_buffer,
+            buffer.buffer,
+            texture.vk_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[region],
+        );
+    }
+
+    let barrier = vk::ImageMemoryBarrier::builder()
+        .image(texture.vk_image)
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .build();
+    unsafe {
+        engine.device.cmd_pipeline_barrier(
+            copy_command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        )
+    };
+
+    unsafe {
+        engine.device.end_command_buffer(copy_command_buffer)
+    }?;
+
+    let submit_infos = [
+        vk::SubmitInfo::builder()
+            .command_buffers(&[copy_command_buffer])
+            .build()
+    ];
+
+    let fence = unsafe {
+        engine.device.create_fence(&vk::FenceCreateInfo::default(), None)
+    }?;
+
+    unsafe {
+        engine.device.queue_submit(engine.queues.graphics, &submit_infos, fence)
+    }?;
+
+    unsafe {
+        engine.device.wait_for_fences(&[fence], true, u64::MAX)
+    }?;
+
+    unsafe {
+        engine.device.destroy_fence(fence, None)
+    };
+
+    unsafe {
+        buffer.cleanup(&mut engine.allocator)
+    };
+
+    unsafe {
+        engine.device.free_command_buffers(engine.pools.command_pool_graphics, &[copy_command_buffer])
+    };
 
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -131,6 +282,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     for m in &mut engine.models {
                         m.update_instance_buffer( &mut engine.allocator).unwrap();
+                    }
+
+                    let image_info = vk::DescriptorImageInfo {
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        image_view: texture.image_view,
+                        sampler: texture.sampler,
+                        ..Default::default()
+                    };
+
+                    let descriptor_write_image = vk::WriteDescriptorSet {
+                        dst_set: engine.descriptor_sets_texture[engine.swapchain.current_image],
+                        dst_binding: 0,
+                        dst_array_element: 0,
+                        descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                        descriptor_count: 1,
+                        p_image_info: [image_info].as_ptr(),
+                        ..Default::default()
+                    };
+
+                    unsafe {
+                        engine.device.update_descriptor_sets(&[descriptor_write_image], &[]);
                     }
 
                     engine.update_command_buffer(image_index as usize)
