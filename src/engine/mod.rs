@@ -119,6 +119,8 @@ impl VulkanEngine {
         let pools = Pools::init(&device, &queue_families)?;
         let command_buffers = pools.create_command_buffers(&device, swapchain.framebuffers.len())?;
 
+        // Camera buffer
+
         let mut uniform_buffer = EngineBuffer::new(
             &mut allocator,
             128,
@@ -145,29 +147,36 @@ impl VulkanEngine {
                 descriptor_count: swapchain.amount_of_images,
             },
         ];
+
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
             .max_sets(2 * swapchain.amount_of_images) //
             .pool_sizes(&pool_sizes);
-        let descriptor_pool =
-            unsafe { device.create_descriptor_pool(&descriptor_pool_info, None) }?;
+
+        let descriptor_pool = unsafe {
+            device.create_descriptor_pool(&descriptor_pool_info, None)
+        }?;
+
+        // Camera Descriptor Set Allocation
 
         let desc_layouts_camera =
             vec![pipeline.descriptor_set_layouts[0]; swapchain.amount_of_images as usize];
+
         let descriptor_set_allocate_info_camera = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&desc_layouts_camera);
+
         let descriptor_sets_camera = unsafe {
             device.allocate_descriptor_sets(&descriptor_set_allocate_info_camera)
         }?;
 
-        for descset in &descriptor_sets_camera {
+        for desc_set in &descriptor_sets_camera {
             let buffer_infos = [vk::DescriptorBufferInfo {
                 buffer: uniform_buffer.buffer,
                 offset: 0,
                 range: 128,
             }];
             let desc_sets_write = [vk::WriteDescriptorSet::builder()
-                .dst_set(*descset)
+                .dst_set(*desc_set)
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&buffer_infos)
@@ -176,47 +185,15 @@ impl VulkanEngine {
             unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
         }
 
-        /*
-        let desc_layouts_light =
-            vec![pipeline.descriptor_set_layouts[1]; swapchain.amount_of_images as usize];
-        let descriptor_set_allocate_info_light = vk::DescriptorSetAllocateInfo::builder()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&desc_layouts_light);
-        let descriptor_sets_light = unsafe {
-            device.allocate_descriptor_sets(&descriptor_set_allocate_info_light)
-        }?;
-
-        let mut light_buffer = EngineBuffer::new(
-            &mut allocator,
-            &device,
-            8,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
-        ).unwrap();
-
-        light_buffer.fill(&mut allocator, &device, &[0., 0.]).unwrap();
-
-        for descset in &descriptor_sets_light {
-            let buffer_infos = [vk::DescriptorBufferInfo {
-                buffer: light_buffer.buffer,
-                offset: 0,
-                range: 8,
-            }];
-            let desc_sets_write = [vk::WriteDescriptorSet::builder()
-                .dst_set(*descset)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&buffer_infos)
-                .build()];
-            unsafe { device.update_descriptor_sets(&desc_sets_write, &[]) };
-        }
-        */
+        // Texture Descriptor Set Allocation
 
         let desc_layouts_texture =
             vec![pipeline.descriptor_set_layouts[1]; swapchain.amount_of_images as usize];
+
         let descriptor_set_allocate_info_texture = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&desc_layouts_texture);
+
         let descriptor_sets_texture = unsafe {
             device.allocate_descriptor_sets(&descriptor_set_allocate_info_texture)
         }?;
@@ -472,8 +449,8 @@ impl VulkanEngine {
         let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
 
         unsafe {
-            self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
-        }
+            self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info)
+        }?;
 
         let clear_values = [
             vk::ClearValue {
@@ -521,8 +498,7 @@ impl VulkanEngine {
                 0,
                 &[
                     self.descriptor_sets_cam[index],
-                    self.descriptor_sets_texture[index],
-//                  self.descriptor_sets_light[index]
+                    self.descriptor_sets_texture[index]
                 ],
                 &[],
             );

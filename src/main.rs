@@ -21,9 +21,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut engine = VulkanEngine::init(window)?;
 
+    let texture = Texture::from_file("assets/Picture.png", &engine.device, &mut engine.allocator);
+
     let mut model = Model::quad();
 
-    let texture = Texture::from_file("assets/Picture.png", &engine.device, &mut engine.allocator);
     let aspect = texture.width as f32 / texture.height as f32;
 
     model.insert_visibly(TexturedInstanceData::from_matrix(
@@ -37,31 +38,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let models = vec![model];
     engine.models = models;
-
-    /*
-
-    let mut lights = LightManager::default();
-
-    lights.add_light(DirectionalLight {
-        direction: na::Vector3::new(-1., -1., 0.),
-        illuminance: [10.1, 10.1, 10.1],
-    });
-    lights.add_light(PointLight {
-        position: na::Point3::new(0.1, -3.0, -3.0),
-        luminous_flux: [100.0, 100.0, 100.0],
-    });
-    lights.add_light(PointLight {
-        position: na::Point3::new(0.1, -3.0, -3.0),
-        luminous_flux: [100.0, 100.0, 100.0],
-    });
-    lights.add_light(PointLight {
-        position: na::Point3::new(0.1, -3.0, -3.0),
-        luminous_flux: [100.0, 100.0, 100.0],
-    });
-
-    lights.update_buffer(&engine.device, &mut engine.allocator, &mut engine.light_buffer, &mut engine.descriptor_sets_light).unwrap();
-
-    */
 
     let mut camera = Camera::builder()
         .position(na::Vector3::new(0.0, 0.0, -5.0))
@@ -292,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
 
                     let descriptor_write_image = vk::WriteDescriptorSet {
-                        dst_set: engine.descriptor_sets_texture[engine.swapchain.current_image],
+                        dst_set: engine.descriptor_sets_texture[image_index as usize],
                         dst_binding: 0,
                         dst_array_element: 0,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -308,10 +284,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     engine.update_command_buffer(image_index as usize)
                         .expect("Failed to update command buffer");
 
-                    let semaphores_available = [engine.swapchain.image_available[engine.swapchain.current_image]];
-                    let waiting_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                    let semaphores_finished = [engine.swapchain.rendering_finished[engine.swapchain.current_image]];
-                    let command_buffers = [engine.graphics_command_buffers[image_index as usize]];
+                    let semaphores_available = [
+                        engine.swapchain.image_available[engine.swapchain.current_image]
+                    ];
+
+                    let waiting_stages = [
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    ];
+
+                    let semaphores_finished = [
+                        engine.swapchain.rendering_finished[engine.swapchain.current_image]
+                    ];
+
+                    let command_buffers = [
+                        engine.graphics_command_buffers[image_index as usize]
+                    ];
 
                     let submit_info = [
                         vk::SubmitInfo::builder()
@@ -326,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         engine.queues.graphics,
                         &submit_info,
                         engine.swapchain.may_begin_drawing[engine.swapchain.current_image]
-                    ).expect("Queue submission");
+                    ).expect("Queue submission failed");
 
                     let swapchains = [engine.swapchain.swapchain];
                     let indices = [image_index];

@@ -285,6 +285,8 @@ impl EnginePipeline {
         swapchain: &EngineSwapchain,
         render_pass: vk::RenderPass
     ) -> Result<EnginePipeline, vk::Result> {
+        // Loading Shaders
+
         let vertex_shader_create_info = vk::ShaderModuleCreateInfo::builder()
             .code(
                 vk_shader_macros::include_glsl!("./shaders/shader_textured.vert")
@@ -315,7 +317,7 @@ impl EnginePipeline {
             fragment_shader_stage.build()
         ];
 
-        // Creating descriptor sets
+        // Camera Descriptor Set
 
         let descriptor_set_layout_binding_descs_cam = [
             vk::DescriptorSetLayoutBinding::builder()
@@ -332,6 +334,8 @@ impl EnginePipeline {
         let descriptor_set_layout_cam = unsafe {
             device.create_descriptor_set_layout(&descriptor_set_layout_info_cam, None)
         }?;
+
+        // Texture Descriptor Set
 
         let descriptor_set_layout_binding_descs_img = [
             vk::DescriptorSetLayoutBinding::builder()

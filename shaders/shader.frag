@@ -102,3 +102,5 @@ void main() {
 
     out_color = vec4(light / (1 + light), 1.0);
 }
+
+
